@@ -4,6 +4,11 @@ out
 gen
 *.exe
 *.exe~
+# XrayR Center / Agent 本地构建产物（勿提交；Linux 使用无后缀或 Docker 构建）
+xrayr-center/center
+xrayr-center/center.exe
+xrayr-agent/xrayr-agent
+xrayr-agent/xrayr-agent.exe
 *.dll
 *.so
 *.dylib

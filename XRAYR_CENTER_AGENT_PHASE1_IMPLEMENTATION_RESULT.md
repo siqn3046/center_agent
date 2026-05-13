@@ -255,12 +255,18 @@
 
 ## 附录 B：本地构建命令（参考）
 
-```text
-cd e:\xrayr-project\xrayr-center
-go build -o center.exe ./cmd/center
-cd e:\xrayr-project\xrayr-agent
-go build -o xrayr-agent.exe ./cmd/agent
+### 本地 / CI 构建（Linux 参考；勿将二进制提交到 Git）
+
+```bash
+# Linux 构建参考（输出无后缀二进制，与 Docker 内构建一致）
+cd xrayr-center
+go build -o center ./cmd/center
+
+cd ../xrayr-agent
+go build -o xrayr-agent ./cmd/agent
 ```
+
+若在 **Windows** 上仅作临时调试，可本地生成 `.exe`，但 **`.exe` 已被 `.gitignore` 忽略且禁止提交**；正式部署请使用 **Docker**（`xrayr-center/docker-compose.yml`）或在 **Linux** 上构建后分发。
 
 Docker：
 
