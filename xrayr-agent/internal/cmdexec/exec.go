@@ -5,13 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"net/http"
 
 	"github.com/XrayR-project/XrayR/xrayr-agent/internal/agentcfg"
 	"github.com/XrayR-project/XrayR/xrayr-agent/internal/capi"
