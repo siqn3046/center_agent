@@ -84,8 +84,8 @@
 
 ## 十、Git 提交号与推送
 
-- **提交号**：`01a0eb5`（`feat: add komari style node dashboard and xrayr config management`）
-- **推送**：已成功 `git push origin main` → `https://github.com/siqn3046/center_agent.git`（`732f5c0..01a0eb5`）。
+- **功能提交**：`01a0eb5`（`feat: add komari style node dashboard and xrayr config management`）— 已成功推送至 `origin/main`。
+- **文档修订**：`227fd13`（`docs: record final commit hash for UI dashboard result`）— **推送失败**：`fatal: unable to access 'https://github.com/siqn3046/center_agent.git/': Failed to connect to github.com port 443`（网络超时）。请在网络恢复后执行：`git push origin main`。
 
 ## 十一、已知未完成项
 
