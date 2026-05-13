@@ -15,9 +15,10 @@ xrayr-agent/xrayr-agent.exe
 *.test
 *.out
 go.work
+# 根目录主程序产物（勿使用 XrayR*，否则在 Windows 大小写不敏感规则下会误匹配 xrayr-center / xrayr-agent）
+/XrayR
+/XrayR.exe
 main
-XrayR
-XrayR*
 access.log
 error.log
 .lego

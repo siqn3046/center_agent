@@ -3,6 +3,7 @@ module github.com/XrayR-project/XrayR/xrayr-agent
 go 1.22.0
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/shirou/gopsutil/v3 v3.24.2
 	gopkg.in/yaml.v3 v3.0.1
 )

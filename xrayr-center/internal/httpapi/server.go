@@ -28,6 +28,7 @@ type Server struct {
 	cfg   *config.Config
 	pool  *pgxpool.Pool
 	nonce *noncecache.Cache
+	hub   *agentHub
 }
 
 func New(cfg *config.Config, pool *pgxpool.Pool) *Server {
@@ -35,6 +36,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool) *Server {
 		cfg:   cfg,
 		pool:  pool,
 		nonce: noncecache.New(10*time.Minute, 90*time.Second),
+		hub:   newAgentHub(),
 	}
 }
 
@@ -43,19 +45,37 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	r.Get("/api/public/artifacts/xrayr-agent/{version}/{file}", s.getPublicArtifactFile)
+
 	r.Post("/api/admin/login", s.postAdminLogin)
 
 	r.Route("/api/admin", func(r chi.Router) {
 		r.Use(s.requireAdminJWT)
 		r.Get("/me", s.getMe)
+		r.Get("/dashboard/summary", s.getDashboardSummary)
 		r.Get("/node-groups", s.listNodeGroups)
 		r.Post("/node-groups", s.createNodeGroup)
 		r.Get("/nodes", s.listNodes)
 		r.Post("/nodes", s.createNode)
 		r.Get("/nodes/{id}", s.getNode)
+		r.Patch("/nodes/{id}/settings", s.patchNodeSettings)
 		r.Get("/nodes/{id}/install-script.sh", s.installScript)
 		r.Get("/nodes/{id}/discovery-reports", s.listDiscovery)
+		r.Get("/nodes/{id}/monitor-snapshots", s.listMonitorSnapshots)
+		r.Get("/nodes/{id}/commands", s.listCommands)
+		r.Get("/nodes/{id}/config-versions", s.listNodeConfigVersions)
+		r.Post("/nodes/{id}/config-versions", s.postNodeConfigVersion)
+		r.Post("/nodes/{id}/config-versions/{versionId}/deploy", s.postNodeConfigVersionDeploy)
+		r.Get("/nodes/{id}/config-deploy-tasks", s.listConfigDeployTasks)
 		r.Post("/nodes/{id}/enable-writable", s.enableWritable)
+		r.Post("/nodes/{id}/commands/restart-xrayr", s.postCmdRestart)
+		r.Post("/nodes/{id}/commands/status-xrayr", s.postCmdStatus)
+		r.Post("/nodes/{id}/commands/apply-config", s.postCmdApplyConfig)
+		r.Post("/nodes/{id}/commands/install-xrayr", s.postCmdInstallXrayr)
+		r.Post("/nodes/{id}/commands/upgrade-xrayr", s.postCmdUpgradeXrayr)
+		r.Get("/config-versions", s.listConfigVersionsGlobal)
+		r.Get("/config-versions/{versionId}", s.getConfigVersionByID)
+		r.Post("/config-versions", s.createConfigVersion)
 	})
 
 	r.Post("/api/agent/register", s.agentRegister)
@@ -66,13 +86,22 @@ func (s *Server) Router() http.Handler {
 		r.Post("/monitor/report", s.agentMonitorReport)
 		r.Post("/xrayr/status", s.agentXrayrStatus)
 		r.Post("/discovery/report", s.agentDiscoveryReport)
+		r.Get("/config-deploy/{deployId}/yaml", s.getConfigDeployYAML)
+		r.Post("/command/progress", s.postAgentCommandProgress)
+		r.Post("/command/result", s.postAgentCommandResult)
 	})
 
 	r.Get("/ws/agent", s.agentWebSocket)
 
 	r.Get("/", s.serveIndex)
 	r.Get("/static/app.js", s.serveJS)
+	r.Get("/static/style.css", s.serveCSS)
 	return r
+}
+
+func (s *Server) serveCSS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	_, _ = w.Write([]byte(styleCSS))
 }
 
 func (s *Server) requireAdminJWT(next http.Handler) http.Handler {
@@ -223,41 +252,22 @@ func (s *Server) createNodeGroup(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
 }
 
-func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.pool.Query(r.Context(), `SELECT id, node_code, node_name, install_state, manage_status, last_seen_at FROM node ORDER BY id DESC`)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-	var out []map[string]any
-	for rows.Next() {
-		var id int64
-		var code, name string
-		var inst, ms *string
-		var last *time.Time
-		_ = rows.Scan(&id, &code, &name, &inst, &ms, &last)
-		out = append(out, map[string]any{"id": id, "node_code": code, "node_name": name, "install_state": inst, "manage_status": ms, "last_seen_at": last})
-	}
-	_ = json.NewEncoder(w).Encode(out)
-}
-
 func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 	adminID := r.Context().Value(ctxAdminID).(int64)
 	var req struct {
-		NodeName                    string `json:"node_name"`
-		NodeCode                    string `json:"node_code"`
-		NodeGroupID                 *int64 `json:"node_group_id"`
-		ExpiresHours                int    `json:"expires_hours"`
-		ImportMode                  string `json:"import_mode"`
-		InstallXrayrIfMissing       *bool  `json:"install_xrayr_if_missing"`
-		UpgradeXrayrIfExists        *bool  `json:"upgrade_xrayr_if_exists"`
-		RepairIfBroken              *bool  `json:"repair_if_broken"`
-		TargetXrayrVersion          string `json:"target_xrayr_version"`
-		TargetDownloadURL           string `json:"target_download_url"`
-		TargetSha256                string `json:"target_sha256"`
-		AutoStartAfterInstall       *bool  `json:"auto_start_after_install"`
-		AutoEnableManageAfterSuccess *bool `json:"auto_enable_manage_after_success"`
+		NodeName                     string `json:"node_name"`
+		NodeCode                     string `json:"node_code"`
+		NodeGroupID                  *int64 `json:"node_group_id"`
+		ExpiresHours                 int    `json:"expires_hours"`
+		ImportMode                   string `json:"import_mode"`
+		InstallXrayrIfMissing        *bool  `json:"install_xrayr_if_missing"`
+		UpgradeXrayrIfExists         *bool  `json:"upgrade_xrayr_if_exists"`
+		RepairIfBroken               *bool  `json:"repair_if_broken"`
+		TargetXrayrVersion           string `json:"target_xrayr_version"`
+		TargetDownloadURL            string `json:"target_download_url"`
+		TargetSha256                 string `json:"target_sha256"`
+		AutoStartAfterInstall        *bool  `json:"auto_start_after_install"`
+		AutoEnableManageAfterSuccess *bool  `json:"auto_enable_manage_after_success"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -334,7 +344,7 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"node_id":         nid,
 		"register_token": plainTok,
-		"expires_at":     exp.UTC().Format(time.RFC3339),
+		"expires_at":      exp.UTC().Format(time.RFC3339),
 	})
 }
 

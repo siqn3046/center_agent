@@ -20,6 +20,9 @@ var indexHTML string
 //go:embed static/app.js
 var appJS string
 
+//go:embed static/style.css
+var styleCSS string
+
 func (s *Server) serveIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(indexHTML))
@@ -32,23 +35,36 @@ func (s *Server) serveJS(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	row := s.pool.QueryRow(r.Context(), `SELECT id, node_code, node_name, install_state, manage_status, imported_config_hash, imported_backup_path,
-		allow_config_apply, allow_restart, allow_cleanup, allow_upgrade, last_seen_at, hostname, discovered_xrayr_version
+	row := s.pool.QueryRow(r.Context(), `SELECT id, node_code, node_name, node_group_id, region, remark, install_state, manage_status, imported_config_hash, imported_backup_path,
+		allow_config_apply, allow_restart, allow_cleanup, allow_upgrade, last_seen_at, hostname, discovered_xrayr_version,
+		agent_os, agent_arch, virtualization, public_ip, discovered_binary_path, discovered_config_path, discovered_service_name, pending_deploy_version_id
 		FROM node WHERE id=$1`, id)
 	var nid int64
+	var ngid *int64
 	var code, name string
+	var region, remark *string
 	var inst, ms, ich, ibp, host, dxv *string
 	var aca, ar, ac, au *bool
 	var last *time.Time
-	if err := row.Scan(&nid, &code, &name, &inst, &ms, &ich, &ibp, &aca, &ar, &ac, &au, &last, &host, &dxv); err != nil {
+	var aos, aarch, virt, pip, dbin, dcfg, dsvc *string
+	var pending *int64
+	if err := row.Scan(&nid, &code, &name, &ngid, &region, &remark, &inst, &ms, &ich, &ibp, &aca, &ar, &ac, &au, &last, &host, &dxv, &aos, &aarch, &virt, &pip, &dbin, &dcfg, &dsvc, &pending); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	var ichid *int64
+	if ich != nil && *ich != "" {
+		_ = s.pool.QueryRow(r.Context(), `SELECT cv.id FROM config_version cv WHERE cv.content_sha256 = $1 AND cv.imported_from_node_id = $2 ORDER BY cv.id DESC LIMIT 1`, *ich, id).Scan(&ichid)
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id": nid, "node_code": code, "node_name": name, "install_state": inst, "manage_status": ms,
-		"imported_config_hash": ich, "imported_backup_path": ibp,
+		"id": nid, "node_code": code, "node_name": name, "node_group_id": ngid, "region": region, "remark": remark,
+		"install_state": inst, "manage_status": ms,
+		"imported_config_hash": ich, "imported_config_version_id": ichid, "imported_backup_path": ibp,
 		"allow_config_apply": aca, "allow_restart": ar, "allow_cleanup": ac, "allow_upgrade": au,
 		"last_seen_at": last, "hostname": host, "discovered_xrayr_version": dxv,
+		"agent_os": aos, "agent_arch": aarch, "virtualization": virt, "public_ip": pip,
+		"discovered_binary_path": dbin, "discovered_config_path": dcfg, "discovered_service_name": dsvc,
+		"pending_deploy_version_id": pending,
 	})
 }
 
@@ -82,8 +98,12 @@ func (s *Server) installScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	base := stringsTrimRightSlash(s.cfg.PublicBaseURL)
-	agentURL := s.cfg.AgentDownloadURL
-	sha := s.cfg.AgentSHA256
+	agentURL, sha, dlSrc, errDl := s.cfg.ResolveAgentDownload()
+	if errDl != nil {
+		http.Error(w, errDl.Error(), http.StatusInternalServerError)
+		return
+	}
+	_ = dlSrc
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$(id -u)" != "0" ]]; then echo "must run as root"; exit 1; fi
@@ -93,10 +113,10 @@ NODE_ID=%d
 REGISTER_TOKEN=%q
 AGENT_URL=%q
 AGENT_SHA256=%q
-if [[ -z "$AGENT_URL" || -z "$AGENT_SHA256" ]]; then echo "Center 未配置 CENTER_AGENT_DOWNLOAD_URL / CENTER_AGENT_SHA256"; exit 1; fi
+if [[ -z "$AGENT_URL" || -z "$AGENT_SHA256" ]]; then echo "Center 未配置 Agent 下载地址与校验和"; exit 1; fi
 getent group xrayr-agent >/dev/null || groupadd --system xrayr-agent
 id xrayr-agent >/dev/null 2>&1 || useradd --system --gid xrayr-agent --shell /usr/sbin/nologin --home /var/lib/xrayr-agent --no-create-home xrayr-agent
-install -d -m 0755 -o root -g root /etc/xrayr-agent /var/lib/xrayr-agent /var/log/xrayr-agent
+install -d -m 0755 -o root -g root /etc/xrayr-agent /var/lib/xrayr-agent /var/log/xrayr-agent /var/backups/xrayr-agent
 TMP="$(mktemp)"
 curl -fsSL "$AGENT_URL" -o "$TMP"
 echo "$AGENT_SHA256  $TMP" | sha256sum -c -
@@ -114,12 +134,19 @@ agent:
   report_interval: 60s
   command_poll_interval: 30s
   log_tail_limit: 300
+  backup_dir: "/var/backups/xrayr-agent"
+  artifact_cache_dir: "/var/lib/xrayr-agent/cache"
   allow_commands:
     - PING
     - SYNC_STATUS
     - TAIL_LOG
     - CHECK_CONFIG
     - DISCOVER_XRAYR
+    - STATUS_XRAYR
+    - RESTART_XRAYR
+    - APPLY_CONFIG
+    - INSTALL_XRAYR
+    - UPGRADE_XRAYR
 xrayr:
   mode: "systemd"
   service_name: "xrayr"
@@ -157,7 +184,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/etc/xrayr-agent /etc/XrayR /var/log/xrayr /var/lib/xrayr-agent
+ReadWritePaths=/etc/xrayr-agent /etc/XrayR /var/log/xrayr /var/lib/xrayr-agent /var/backups/xrayr-agent
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -166,6 +193,7 @@ Defaults:xrayr-agent secure_path=/sbin:/bin:/usr/sbin:/usr/bin
 xrayr-agent ALL=(root) NOPASSWD: /bin/systemctl restart xrayr
 xrayr-agent ALL=(root) NOPASSWD: /bin/systemctl status xrayr
 xrayr-agent ALL=(root) NOPASSWD: /bin/systemctl is-active xrayr
+xrayr-agent ALL=(root) NOPASSWD: /bin/systemctl daemon-reload
 SUDO
 chmod 0440 /etc/sudoers.d/xrayr-agent
 visudo -cf /etc/sudoers.d/xrayr-agent
@@ -187,7 +215,9 @@ func stringsTrimRightSlash(s string) string {
 
 func (s *Server) listDiscovery(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	rows, err := s.pool.Query(r.Context(), `SELECT id, install_state, config_hash, error_tail, created_at FROM discovery_report WHERE node_id=$1 ORDER BY id DESC LIMIT 50`, id)
+	rows, err := s.pool.Query(r.Context(), `SELECT dr.id, dr.install_state, dr.config_hash, dr.error_tail, dr.created_at, dr.raw_json,
+		n.manage_status, n.discovered_service_name, n.discovered_binary_path, n.discovered_config_path, n.imported_config_hash, n.imported_backup_path
+		FROM discovery_report dr JOIN node n ON n.id = dr.node_id WHERE dr.node_id=$1 ORDER BY dr.id DESC LIMIT 50`, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -198,8 +228,16 @@ func (s *Server) listDiscovery(w http.ResponseWriter, r *http.Request) {
 		var rid int64
 		var st, ch, tail *string
 		var ct time.Time
-		_ = rows.Scan(&rid, &st, &ch, &tail, &ct)
-		out = append(out, map[string]any{"id": rid, "install_state": st, "config_hash": ch, "error_tail": tail, "created_at": ct})
+		var raw []byte
+		var ms, svc, dbin, dcfg, ich, ibp *string
+		_ = rows.Scan(&rid, &st, &ch, &tail, &ct, &raw, &ms, &svc, &dbin, &dcfg, &ich, &ibp)
+		var rj any
+		_ = json.Unmarshal(raw, &rj)
+		out = append(out, map[string]any{
+			"id": rid, "install_state": st, "config_hash": ch, "error_tail": tail, "created_at": ct, "raw_json": rj,
+			"manage_status": ms, "service_name": svc, "binary_path": dbin, "config_path": dcfg,
+			"imported_config_hash": ich, "imported_backup_path": ibp, "last_report_time": ct,
+		})
 	}
 	_ = json.NewEncoder(w).Encode(out)
 }
@@ -207,7 +245,7 @@ func (s *Server) listDiscovery(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enableWritable(w http.ResponseWriter, r *http.Request) {
 	adminID := r.Context().Value(ctxAdminID).(int64)
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	_, err := s.pool.Exec(r.Context(), `UPDATE node SET manage_status='MANAGED_WRITABLE', allow_config_apply=true, allow_restart=true, allow_cleanup=true, allow_upgrade=false, updated_at=now() WHERE id=$1`, id)
+	_, err := s.pool.Exec(r.Context(), `UPDATE node SET manage_status='MANAGED_WRITABLE', allow_config_apply=true, allow_restart=true, allow_cleanup=true, allow_upgrade=true, updated_at=now() WHERE id=$1`, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -256,8 +294,9 @@ func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secret := randomHex(32)
-	_, err = tx.Exec(r.Context(), `UPDATE node SET node_hmac_key=$2, hostname=COALESCE(NULLIF($3,''), hostname), public_ip=COALESCE(NULLIF($4,''), public_ip), agent_version=$5, last_seen_at=now(), updated_at=now() WHERE id=$1`,
-		nid, secret, req.Hostname, req.PublicIP, req.AgentVersion)
+	_, err = tx.Exec(r.Context(), `UPDATE node SET node_hmac_key=$2, hostname=COALESCE(NULLIF($3,''), hostname), public_ip=COALESCE(NULLIF($4,''), public_ip), agent_version=$5,
+		agent_os=COALESCE(NULLIF($6,''), agent_os), agent_arch=COALESCE(NULLIF($7,''), agent_arch), last_seen_at=now(), updated_at=now() WHERE id=$1`,
+		nid, secret, req.Hostname, req.PublicIP, req.AgentVersion, req.OS, req.Arch)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -439,18 +478,3 @@ func strOrNil(m map[string]any, k string) any {
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-
-func (s *Server) agentWebSocket(w http.ResponseWriter, r *http.Request) {
-	c, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-	defer c.Close()
-	_ = c.WriteJSON(map[string]any{"type": "hello", "message": "MVP WebSocket 占位，命令请走后续版本"})
-	for {
-		_, _, err := c.ReadMessage()
-		if err != nil {
-			break
-		}
-	}
-}

@@ -8,7 +8,13 @@ import (
 )
 
 //go:embed migrations/001_init.sql
-var migrationSQL string
+var migration001 string
+
+//go:embed migrations/002_phase2.sql
+var migration002 string
+
+//go:embed migrations/003_ui_node.sql
+var migration003 string
 
 func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
@@ -27,6 +33,10 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 }
 
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	_, err := pool.Exec(ctx, migrationSQL)
-	return err
+	for _, sql := range []string{migration001, migration002, migration003} {
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -22,23 +22,27 @@ type CenterYAML struct {
 }
 
 type AgentYAML struct {
-	HeartbeatInterval     string   `yaml:"heartbeat_interval"`
-	ReportInterval        string   `yaml:"report_interval"`
-	CommandPollInterval   string   `yaml:"command_poll_interval"`
-	LogTailLimit          int      `yaml:"log_tail_limit"`
-	AllowCommands         []string `yaml:"allow_commands"`
+	HeartbeatInterval   string   `yaml:"heartbeat_interval"`
+	ReportInterval      string   `yaml:"report_interval"`
+	CommandPollInterval string   `yaml:"command_poll_interval"`
+	LogTailLimit        int      `yaml:"log_tail_limit"`
+	AllowCommands       []string `yaml:"allow_commands"`
+	BackupDir           string   `yaml:"backup_dir"`
+	ArtifactCacheDir    string   `yaml:"artifact_cache_dir"`
 }
 
 type XrayRYAML struct {
-	Mode              string            `yaml:"mode"`
-	ServiceName       string            `yaml:"service_name"`
-	ConfigPath        string            `yaml:"config_path"`
-	ConfigBackupDir   string            `yaml:"config_backup_dir"`
-	ErrorLogPath      string            `yaml:"error_log_path"`
-	AccessLogPath     string            `yaml:"access_log_path"`
-	BinarySearchPaths []string          `yaml:"binary_search_paths"`
-	ConfigSearchPaths []string          `yaml:"config_search_paths"`
-	HealthCheck       HealthCheckYAML   `yaml:"health_check"`
+	Mode              string           `yaml:"mode"`
+	ServiceName       string           `yaml:"service_name"`
+	BinaryPath        string           `yaml:"binary_path"`
+	ConfigPath        string           `yaml:"config_path"`
+	ConfigBackupDir   string           `yaml:"config_backup_dir"`
+	BackupDir         string           `yaml:"backup_dir"`
+	ErrorLogPath      string           `yaml:"error_log_path"`
+	AccessLogPath     string           `yaml:"access_log_path"`
+	BinarySearchPaths []string         `yaml:"binary_search_paths"`
+	ConfigSearchPaths []string         `yaml:"config_search_paths"`
+	HealthCheck       HealthCheckYAML  `yaml:"health_check"`
 }
 
 type HealthCheckYAML struct {
@@ -70,6 +74,15 @@ func Load(path string) (*File, error) {
 	}
 	if f.XrayR.ConfigBackupDir == "" {
 		f.XrayR.ConfigBackupDir = "/etc/XrayR/backups"
+	}
+	if f.XrayR.BackupDir == "" {
+		f.XrayR.BackupDir = f.XrayR.ConfigBackupDir
+	}
+	if f.Agent.BackupDir == "" {
+		f.Agent.BackupDir = "/var/backups/xrayr-agent"
+	}
+	if f.Agent.ArtifactCacheDir == "" {
+		f.Agent.ArtifactCacheDir = "/var/lib/xrayr-agent/cache"
 	}
 	if f.XrayR.ErrorLogPath == "" {
 		f.XrayR.ErrorLogPath = "/var/log/xrayr/error.log"

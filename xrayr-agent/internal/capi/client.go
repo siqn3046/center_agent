@@ -65,12 +65,34 @@ func (c *Client) Register(payload any) (map[string]any, error) {
 
 func (c *Client) SignedJSON(method, path string, payload any) error {
 	body, _ := json.Marshal(payload)
+	return c.signedRequest(method, path, body)
+}
+
+func (c *Client) SignedGET(path string) ([]byte, error) {
+	return c.signedRequestBytes(http.MethodGet, path, nil)
+}
+
+func (c *Client) signedRequest(method, path string, body []byte) error {
+	_, err := c.signedRequestBytes(method, path, body)
+	return err
+}
+
+func (c *Client) signedRequestBytes(method, path string, body []byte) ([]byte, error) {
+	if body == nil {
+		body = []byte{}
+	}
 	ts := time.Now().Unix()
 	nonce := randomNonce()
 	bh := hsign.BodyHash(body)
 	sig := hsign.Sign(c.Secret, method, path, ts, nonce, body)
-	req, _ := http.NewRequest(method, c.BaseURL+path, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	var rdr io.Reader
+	if len(body) > 0 {
+		rdr = bytes.NewReader(body)
+	}
+	req, _ := http.NewRequest(method, c.BaseURL+path, rdr)
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("X-Node-Id", c.NodeID)
 	req.Header.Set("X-Timestamp", strconv.FormatInt(ts, 10))
 	req.Header.Set("X-Nonce", nonce)
@@ -78,14 +100,14 @@ func (c *Client) SignedJSON(method, path string, payload any) error {
 	req.Header.Set("X-Signature", sig)
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s %s: %d %s", method, path, resp.StatusCode, string(b))
+		return nil, fmt.Errorf("%s %s: %d %s", method, path, resp.StatusCode, string(out))
 	}
-	return nil
+	return out, nil
 }
 
 func randomNonce() string {
