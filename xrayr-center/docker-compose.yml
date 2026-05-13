@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: center
+      POSTGRES_PASSWORD: center
+      POSTGRES_DB: center
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U center -d center"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  center:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://center:center@postgres:5432/center?sslmode=disable
+      CENTER_JWT_SECRET: dev-change-me-change-me-32chars!!
+      CENTER_PUBLIC_BASE_URL: http://localhost:8080
+      CENTER_LISTEN: ":8080"
+      # 以下为 Agent 安装脚本校验用：请放置已构建的 xrayr-agent 二进制下载地址与 sha256
+      CENTER_AGENT_DOWNLOAD_URL: ""
+      CENTER_AGENT_SHA256: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
