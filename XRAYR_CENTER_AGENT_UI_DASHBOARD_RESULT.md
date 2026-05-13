@@ -84,8 +84,8 @@
 
 ## 十、Git 提交号与推送
 
-- **提交号**：`bbe9c66`（`feat: add komari style node dashboard and xrayr config management`）
-- **推送**：见下方 `git push` 实际输出。
+- **提交号**：`01a0eb5`（`feat: add komari style node dashboard and xrayr config management`）
+- **推送**：已成功 `git push origin main` → `https://github.com/siqn3046/center_agent.git`（`732f5c0..01a0eb5`）。
 
 ## 十一、已知未完成项
 
