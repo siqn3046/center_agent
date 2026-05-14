@@ -2,6 +2,7 @@ package agentcfg
 
 import (
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -34,6 +35,7 @@ type AgentYAML struct {
 type XrayRYAML struct {
 	Mode              string           `yaml:"mode"`
 	ServiceName       string           `yaml:"service_name"`
+	ServicePath       string           `yaml:"service_path"`
 	BinaryPath        string           `yaml:"binary_path"`
 	ConfigPath        string           `yaml:"config_path"`
 	ConfigBackupDir   string           `yaml:"config_backup_dir"`
@@ -63,6 +65,12 @@ func Load(path string) (*File, error) {
 	if f.XrayR.ServiceName == "" {
 		f.XrayR.ServiceName = "xrayr"
 	}
+	if f.XrayR.BinaryPath == "" {
+		f.XrayR.BinaryPath = "/usr/local/bin/XrayR"
+	}
+	if f.XrayR.ServicePath == "" {
+		f.XrayR.ServicePath = "/etc/systemd/system/" + f.XrayR.ServiceName + ".service"
+	}
 	if len(f.XrayR.BinarySearchPaths) == 0 {
 		f.XrayR.BinarySearchPaths = []string{"/usr/local/bin/XrayR", "/usr/bin/XrayR", "/opt/XrayR/XrayR"}
 	}
@@ -79,10 +87,10 @@ func Load(path string) (*File, error) {
 		f.XrayR.BackupDir = f.XrayR.ConfigBackupDir
 	}
 	if f.Agent.BackupDir == "" {
-		f.Agent.BackupDir = "/var/backups/xrayr-agent"
+		f.Agent.BackupDir = "/var/lib/xrayr-agent/backups"
 	}
 	if f.Agent.ArtifactCacheDir == "" {
-		f.Agent.ArtifactCacheDir = "/var/lib/xrayr-agent/cache"
+		f.Agent.ArtifactCacheDir = "/var/lib/xrayr-agent/artifacts"
 	}
 	if f.XrayR.ErrorLogPath == "" {
 		f.XrayR.ErrorLogPath = "/var/log/xrayr/error.log"
@@ -110,4 +118,26 @@ func ParseDur(s string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// EffectiveBinaryPath 返回 Agent 本地用于安装/升级的二进制路径（仅来自配置，不信任 Center 任意路径）。
+func (f *File) EffectiveBinaryPath() string {
+	p := strings.TrimSpace(f.XrayR.BinaryPath)
+	if p != "" {
+		return p
+	}
+	return "/usr/local/bin/XrayR"
+}
+
+// EffectiveServicePath 返回 systemd unit 文件路径。
+func (f *File) EffectiveServicePath() string {
+	p := strings.TrimSpace(f.XrayR.ServicePath)
+	if p != "" {
+		return p
+	}
+	sn := strings.TrimSpace(f.XrayR.ServiceName)
+	if sn == "" {
+		sn = "xrayr"
+	}
+	return "/etc/systemd/system/" + sn + ".service"
 }

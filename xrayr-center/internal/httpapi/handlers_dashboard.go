@@ -395,9 +395,6 @@ func (s *Server) patchNodeSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if req.AllowInstall != nil {
-		req.AllowRestart = req.AllowInstall
-	}
 	_, err := s.pool.Exec(r.Context(), `UPDATE node SET
 		node_name = COALESCE($2, node_name),
 		region = COALESCE($3, region),
@@ -408,10 +405,11 @@ func (s *Server) patchNodeSettings(w http.ResponseWriter, r *http.Request) {
 		allow_config_apply = COALESCE($8, allow_config_apply),
 		allow_upgrade = COALESCE($9, allow_upgrade),
 		pending_deploy_version_id = COALESCE($10, pending_deploy_version_id),
+		allow_install = COALESCE($11, allow_install),
 		updated_at = now()
 		WHERE id=$1`,
 		id, req.NodeName, req.Region, req.NodeGroupID, req.Remark, req.ManageStatus,
-		req.AllowRestart, req.AllowConfigApply, req.AllowUpgrade, req.PendingDeployVersionID)
+		req.AllowRestart, req.AllowConfigApply, req.AllowUpgrade, req.PendingDeployVersionID, req.AllowInstall)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

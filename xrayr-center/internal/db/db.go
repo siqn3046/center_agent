@@ -16,6 +16,9 @@ var migration002 string
 //go:embed migrations/003_ui_node.sql
 var migration003 string
 
+//go:embed migrations/004_phase3_artifacts.sql
+var migration004 string
+
 func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -33,7 +36,7 @@ func Connect(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 }
 
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	for _, sql := range []string{migration001, migration002, migration003} {
+	for _, sql := range []string{migration001, migration002, migration003, migration004} {
 		if _, err := pool.Exec(ctx, sql); err != nil {
 			return err
 		}

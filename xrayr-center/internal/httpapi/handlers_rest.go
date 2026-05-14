@@ -36,7 +36,7 @@ func (s *Server) serveJS(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	row := s.pool.QueryRow(r.Context(), `SELECT id, node_code, node_name, node_group_id, region, remark, install_state, manage_status, imported_config_hash, imported_backup_path,
-		allow_config_apply, allow_restart, allow_cleanup, allow_upgrade, last_seen_at, hostname, discovered_xrayr_version,
+		allow_config_apply, allow_restart, allow_install, allow_cleanup, allow_upgrade, last_seen_at, hostname, discovered_xrayr_version,
 		agent_os, agent_arch, virtualization, public_ip, discovered_binary_path, discovered_config_path, discovered_service_name, pending_deploy_version_id
 		FROM node WHERE id=$1`, id)
 	var nid int64
@@ -44,11 +44,11 @@ func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
 	var code, name string
 	var region, remark *string
 	var inst, ms, ich, ibp, host, dxv *string
-	var aca, ar, ac, au *bool
+	var aca, ar, ai, ac, au *bool
 	var last *time.Time
 	var aos, aarch, virt, pip, dbin, dcfg, dsvc *string
 	var pending *int64
-	if err := row.Scan(&nid, &code, &name, &ngid, &region, &remark, &inst, &ms, &ich, &ibp, &aca, &ar, &ac, &au, &last, &host, &dxv, &aos, &aarch, &virt, &pip, &dbin, &dcfg, &dsvc, &pending); err != nil {
+	if err := row.Scan(&nid, &code, &name, &ngid, &region, &remark, &inst, &ms, &ich, &ibp, &aca, &ar, &ai, &ac, &au, &last, &host, &dxv, &aos, &aarch, &virt, &pip, &dbin, &dcfg, &dsvc, &pending); err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -60,7 +60,7 @@ func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
 		"id": nid, "node_code": code, "node_name": name, "node_group_id": ngid, "region": region, "remark": remark,
 		"install_state": inst, "manage_status": ms,
 		"imported_config_hash": ich, "imported_config_version_id": ichid, "imported_backup_path": ibp,
-		"allow_config_apply": aca, "allow_restart": ar, "allow_cleanup": ac, "allow_upgrade": au,
+		"allow_config_apply": aca, "allow_restart": ar, "allow_install": ai, "allow_cleanup": ac, "allow_upgrade": au,
 		"last_seen_at": last, "hostname": host, "discovered_xrayr_version": dxv,
 		"agent_os": aos, "agent_arch": aarch, "virtualization": virt, "public_ip": pip,
 		"discovered_binary_path": dbin, "discovered_config_path": dcfg, "discovered_service_name": dsvc,
@@ -245,7 +245,7 @@ func (s *Server) listDiscovery(w http.ResponseWriter, r *http.Request) {
 func (s *Server) enableWritable(w http.ResponseWriter, r *http.Request) {
 	adminID := r.Context().Value(ctxAdminID).(int64)
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	_, err := s.pool.Exec(r.Context(), `UPDATE node SET manage_status='MANAGED_WRITABLE', allow_config_apply=true, allow_restart=true, allow_cleanup=true, allow_upgrade=true, updated_at=now() WHERE id=$1`, id)
+	_, err := s.pool.Exec(r.Context(), `UPDATE node SET manage_status='MANAGED_WRITABLE', allow_config_apply=true, allow_restart=true, allow_install=true, allow_cleanup=true, allow_upgrade=true, updated_at=now() WHERE id=$1`, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

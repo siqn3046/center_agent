@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -78,17 +79,18 @@ func (s *Server) opLog(ctx context.Context, adminID int64, action, targetType, t
 }
 
 type nodePermRow struct {
-	ManageStatus      string
-	AllowRestart      bool
-	AllowConfigApply  bool
-	AllowUpgrade      bool
+	ManageStatus       string
+	AllowRestart       bool
+	AllowConfigApply   bool
+	AllowUpgrade       bool
+	AllowInstall       bool
 	ImportedConfigHash *string
 }
 
 func (s *Server) loadNodePerms(ctx context.Context, nodeID int64) (*nodePermRow, error) {
 	var r nodePermRow
-	err := s.pool.QueryRow(ctx, `SELECT COALESCE(manage_status,''), allow_restart, allow_config_apply, allow_upgrade, imported_config_hash FROM node WHERE id=$1 AND disabled=false`,
-		nodeID).Scan(&r.ManageStatus, &r.AllowRestart, &r.AllowConfigApply, &r.AllowUpgrade, &r.ImportedConfigHash)
+	err := s.pool.QueryRow(ctx, `SELECT COALESCE(manage_status,''), allow_restart, allow_config_apply, allow_upgrade, COALESCE(allow_install,false), imported_config_hash FROM node WHERE id=$1 AND disabled=false`,
+		nodeID).Scan(&r.ManageStatus, &r.AllowRestart, &r.AllowConfigApply, &r.AllowUpgrade, &r.AllowInstall, &r.ImportedConfigHash)
 	if err != nil {
 		return nil, err
 	}
@@ -117,8 +119,8 @@ func (s *Server) assertCommandAllowed(ctx context.Context, cmd string, np *nodeP
 			return fmt.Errorf("MANAGED_READONLY 或未 enable-writable / allow_config_apply 禁止下发配置")
 		}
 	case "INSTALL_XRAYR":
-		if readOnly || !isWritable(np.ManageStatus) || !np.AllowRestart {
-			return fmt.Errorf("MANAGED_READONLY 或未 enable-writable 禁止安装 XrayR")
+		if readOnly || !isWritable(np.ManageStatus) || !np.AllowInstall {
+			return fmt.Errorf("MANAGED_READONLY 或未 enable-writable / allow_install 禁止安装 XrayR")
 		}
 	case "UPGRADE_XRAYR":
 		if readOnly || !isWritable(np.ManageStatus) || !np.AllowUpgrade {
@@ -334,38 +336,108 @@ func (s *Server) postCmdInstallUpgrade(w http.ResponseWriter, r *http.Request, i
 	adminID := r.Context().Value(ctxAdminID).(int64)
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	var req struct {
-		DownloadURL string `json:"download_url"`
-		Sha256      string `json:"sha256"`
-		Version     string `json:"version"`
+		ArtifactID           int64  `json:"artifact_id"`
+		InitialConfigYAML    string `json:"initial_config_yaml"`
+		InitialConfigSha256  string `json:"initial_config_sha256"`
+		OverwriteConfig      *bool  `json:"overwrite_config"`
+		ConfigYAML           string `json:"config_yaml"`
+		ConfigSha256         string `json:"config_sha256"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if !s.allowedArtifactURL(req.DownloadURL) || len(strings.TrimSpace(req.Sha256)) != 64 {
-		http.Error(w, "download_url 必须为 Center 托管制品 URL 且 sha256 为 64 位十六进制", http.StatusBadRequest)
+	if req.ArtifactID <= 0 {
+		http.Error(w, "artifact_id 必填", http.StatusBadRequest)
 		return
+	}
+	var name, tos, ta, ver, sha, rel string
+	var dis bool
+	err := s.pool.QueryRow(r.Context(), `SELECT display_name, target_os, target_arch, COALESCE(version_label,''), sha256_hex, storage_relpath, disabled
+		FROM xrayr_binary_artifact WHERE id=$1`, req.ArtifactID).Scan(&name, &tos, &ta, &ver, &sha, &rel, &dis)
+	if err != nil || dis {
+		http.Error(w, "制品不存在或已禁用", http.StatusBadRequest)
+		return
+	}
+	var nos, narch, dbin, dcfg, dsvc *string
+	if err := s.pool.QueryRow(r.Context(), `SELECT agent_os, agent_arch, discovered_binary_path, discovered_config_path, discovered_service_name FROM node WHERE id=$1 AND disabled=false`, id).Scan(&nos, &narch, &dbin, &dcfg, &dsvc); err != nil {
+		http.Error(w, "节点不存在", http.StatusNotFound)
+		return
+	}
+	if nos != nil && strings.TrimSpace(*nos) != "" && !strings.EqualFold(strings.TrimSpace(*nos), tos) {
+		http.Error(w, "节点操作系统与制品 target_os 不匹配", http.StatusBadRequest)
+		return
+	}
+	if narch != nil && strings.TrimSpace(*narch) != "" && !archMatchesAgent(strings.TrimSpace(*narch), ta) {
+		http.Error(w, "节点架构与制品 target_arch 不匹配", http.StatusBadRequest)
+		return
+	}
+	tb := "/usr/local/bin/XrayR"
+	tc := "/etc/XrayR/config.yml"
+	sn := "xrayr"
+	if dbin != nil && strings.TrimSpace(*dbin) != "" {
+		tb = strings.TrimSpace(*dbin)
+	}
+	if dcfg != nil && strings.TrimSpace(*dcfg) != "" {
+		tc = strings.TrimSpace(*dcfg)
+	}
+	if dsvc != nil && strings.TrimSpace(*dsvc) != "" {
+		sn = strings.TrimSuffix(strings.TrimSpace(*dsvc), ".service")
+	}
+	if sn == "" {
+		sn = "xrayr"
+	}
+	ts := fmt.Sprintf("/etc/systemd/system/%s.service", sn)
+	icy := strings.TrimSpace(req.InitialConfigYAML)
+	if icy != "" {
+		req.InitialConfigSha256 = strings.ToLower(strings.TrimSpace(req.InitialConfigSha256))
+		if len(req.InitialConfigSha256) != 64 {
+			http.Error(w, "initial_config_sha256 必须为 64 位十六进制", http.StatusBadRequest)
+			return
+		}
+	}
+	if !install && req.OverwriteConfig != nil && *req.OverwriteConfig {
+		req.ConfigSha256 = strings.ToLower(strings.TrimSpace(req.ConfigSha256))
+		if strings.TrimSpace(req.ConfigYAML) == "" || len(req.ConfigSha256) != 64 {
+			http.Error(w, "overwrite_config 为 true 时必须提供 config_yaml 与 config_sha256", http.StatusBadRequest)
+			return
+		}
 	}
 	cmd := "UPGRADE_XRAYR"
 	if install {
 		cmd = "INSTALL_XRAYR"
 	}
-	payload := map[string]any{"download_url": req.DownloadURL, "sha256": strings.ToLower(strings.TrimSpace(req.Sha256)), "version": req.Version}
+	payload := map[string]any{
+		"artifact_id":             req.ArtifactID,
+		"artifact_name":           name,
+		"download_path":           fmt.Sprintf("/api/agent/artifacts/%d/download", req.ArtifactID),
+		"sha256":                  sha,
+		"target_os":               tos,
+		"target_arch":             ta,
+		"version_label":           nullStrOrPtr(ver),
+		"service_name":            sn,
+		"target_binary_path":      tb,
+		"target_config_path":      tc,
+		"target_service_path":     ts,
+		"enable_service":          true,
+		"restart_after_install":   true,
+		"storage_relpath":         filepath.ToSlash(rel),
+	}
+	if icy != "" {
+		payload["initial_config_yaml"] = icy
+		payload["initial_config_sha256"] = req.InitialConfigSha256
+	}
+	if !install && req.OverwriteConfig != nil && *req.OverwriteConfig {
+		payload["overwrite_config"] = true
+		payload["config_yaml"] = req.ConfigYAML
+		payload["config_sha256"] = req.ConfigSha256
+	}
 	cid, err := s.enqueueCommand(r.Context(), adminID, id, cmd, payload, "")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"command_id": cid})
-}
-
-func (s *Server) allowedArtifactURL(u string) bool {
-	u = strings.TrimSpace(u)
-	if u == "" {
-		return false
-	}
-	base := stringsTrimRightSlash(s.cfg.PublicBaseURL)
-	return strings.HasPrefix(u, base+"/api/public/artifacts/")
 }
 
 func (s *Server) getConfigDeployYAML(w http.ResponseWriter, r *http.Request) {
@@ -439,7 +511,10 @@ func (s *Server) postAgentCommandResult(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "invalid status", http.StatusBadRequest)
 		return
 	}
-	rj, _ := json.Marshal(req.ResultJSON)
+	var curJSON []byte
+	_ = s.pool.QueryRow(r.Context(), `SELECT COALESCE(result_json, '{}'::jsonb)::text FROM command_task WHERE command_id=$1::uuid AND node_id=$2`, req.CommandID, nid).Scan(&curJSON)
+	merged := mergeCommandResultJSON(curJSON, req.ResultJSON)
+	rj, _ := json.Marshal(merged)
 	_, err := s.pool.Exec(r.Context(), `UPDATE command_task SET status=$1, log_summary=$2, result_json=$3::jsonb, error_message=$4, finished_at=now(), updated_at=now() WHERE command_id=$5::uuid AND node_id=$6`,
 		st, nullStrOrPtr(req.LogSummary), rj, nullStrOrPtr(req.ErrorMessage), req.CommandID, nid)
 	if err != nil {
@@ -472,6 +547,35 @@ func (s *Server) postAgentCommandResult(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func mergeCommandResultJSON(curJSON []byte, incoming map[string]any) map[string]any {
+	var cur map[string]any
+	_ = json.Unmarshal(curJSON, &cur)
+	if cur == nil {
+		cur = map[string]any{}
+	}
+	var prog any
+	if p, ok := cur["progress"]; ok {
+		prog = p
+	}
+	incomingHasProgress := false
+	if incoming != nil {
+		_, incomingHasProgress = incoming["progress"]
+	}
+	out := make(map[string]any)
+	for k, v := range cur {
+		out[k] = v
+	}
+	if incoming != nil {
+		for k, v := range incoming {
+			out[k] = v
+		}
+	}
+	if !incomingHasProgress && prog != nil {
+		out["progress"] = prog
+	}
+	return out
 }
 
 func strFromResult(m map[string]any, k string) any {

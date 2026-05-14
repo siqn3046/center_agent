@@ -92,6 +92,26 @@
     return node && node.manage_status === "MANAGED_WRITABLE";
   }
 
+  function truthy(v) {
+    return v === true || v === 1;
+  }
+
+  function archMatchNode(agentArch, artArch) {
+    if (!agentArch || !artArch) return false;
+    var a = String(agentArch).toLowerCase();
+    var b = String(artArch).toLowerCase();
+    if (a === b) return true;
+    if ((a === "amd64" && b === "x86_64") || (a === "x86_64" && b === "amd64")) return true;
+    return false;
+  }
+
+  function artifactsForNode(n, list) {
+    if (!list || !n || !n.agent_os || !n.agent_arch) return [];
+    return list.filter(function (x) {
+      return String(x.target_os).toLowerCase() === String(n.agent_os).toLowerCase() && archMatchNode(n.agent_arch, x.target_arch);
+    });
+  }
+
   const state = {
     view: "login",
     nodeId: null,
@@ -110,6 +130,7 @@
     configEdit: false,
     selectedVersionId: null,
     loading: false,
+    artifacts: [],
   };
 
   function setLoading(v) {
@@ -151,6 +172,9 @@
       }),
       api("/api/admin/nodes/" + state.nodeId + "/commands").then(function (c) {
         state.commands = c || [];
+      }),
+      api("/api/admin/artifacts").then(function (a) {
+        state.artifacts = a || [];
       }),
     ]).then(function () {
       if (state.tab === "config" && state.node && state.node.imported_config_version_id) {
@@ -639,16 +663,59 @@
       return;
     }
     if (state.tab === "commands") {
+      const arts = artifactsForNode(n, state.artifacts);
+      const artOpts =
+        '<option value="">-- 选择制品 --</option>' +
+        arts
+          .map(function (x) {
+            return '<option value="' + esc(String(x.id)) + '">' + esc(x.display_name || "") + " (" + esc(x.version_label || x.sha256) + ")</option>";
+          })
+          .join("");
+      const noArtsHint =
+        arts.length === 0
+          ? '<p class="small" style="color:#b45309">无匹配制品：请确认节点已上报 agent_os/agent_arch，并在 Center 配置 CENTER_ARTIFACT_DIR 后登记制品（POST /api/admin/artifacts）。</p>'
+          : "";
+      const canRestart = truthy(n.allow_restart);
+      const canApply = truthy(n.allow_config_apply);
+      const canInstall = truthy(n.allow_install);
+      const canUpgrade = truthy(n.allow_upgrade);
+      const installDisabled = !canInstall || arts.length === 0;
+      const upgradeDisabled = !canUpgrade || arts.length === 0;
       el.innerHTML =
         '<div class="panel"><h3 style="margin-top:0">命令</h3><div style="margin-bottom:10px">' +
-        '<button class="btn" id="cst">Status XrayR</button> ' +
+        '<button class="btn" id="cst">查看状态</button> ' +
         (writable(n)
-          ? '<button class="btn" id="crst">Restart XrayR</button> <button class="btn" id="capp">Apply Config（使用待选版本）</button> <button class="btn" id="cins">Install XrayR</button> <button class="btn" id="cupg">Upgrade XrayR</button>'
-          : '<span class="small">MANAGED_READONLY：仅允许 Status</span>') +
+          ? '<button class="btn" id="crst" ' +
+            (canRestart ? "" : "disabled title=\"需要 allow_restart\"") +
+            '>重启 XrayR</button> <button class="btn" id="capp" ' +
+            (canApply ? "" : "disabled title=\"需要 allow_config_apply\"") +
+            '>应用配置（待选版本）</button>' +
+            '<div style="margin-top:10px">' +
+            '<label class="small">安装/升级使用的制品</label>' +
+            '<select id="artsel" class="input" style="width:100%;max-width:480px">' +
+            artOpts +
+            "</select></div>" +
+            noArtsHint +
+            '<button class="btn btn-danger" style="margin-top:8px;margin-right:8px" id="cins" ' +
+            (installDisabled ? "disabled" : "") +
+            '>安装 XrayR</button>' +
+            '<button class="btn btn-danger" id="cupg" ' +
+            (upgradeDisabled ? "disabled" : "") +
+            '>升级 XrayR</button>' +
+            '</div><p class="small">MANAGED_READONLY 节点仅可使用「查看状态」。安装/升级为高危操作，需二次确认且后端校验 allow_install / allow_upgrade。</p>'
+          : '<span class="small">MANAGED_READONLY：仅允许查看状态</span>') +
         '</div><table class="data"><thead><tr><th>command_id</th><th>类型</th><th>状态</th><th>进度/摘要</th><th>错误</th><th>创建</th></tr></thead><tbody>' +
         state.commands
           .map(function (c) {
-            const prog = c.result_json && c.result_json.progress ? JSON.stringify(c.result_json.progress).slice(0, 120) : "";
+            var prog = "";
+            if (c.result_json && c.result_json.progress && Array.isArray(c.result_json.progress)) {
+              prog = c.result_json.progress
+                .map(function (s) {
+                  return (s.step || "") + ": " + (s.message || "");
+                })
+                .join(" | ");
+            }
+            if (prog.length > 420) prog = prog.slice(0, 420) + "…";
             return (
               "<tr><td class=\"small\">" +
               esc(c.command_id) +
@@ -680,43 +747,93 @@
           });
       };
       if (writable(n)) {
-        document.getElementById("crst").onclick = function () {
-          confirmModal("确认重启 XrayR？", function () {
-            api("/api/admin/nodes/" + state.nodeId + "/commands/restart-xrayr", { method: "POST", body: "{}" })
-              .then(function () {
-                toast("已下发 RESTART");
-                return loadNodeDetail();
+        var rst = document.getElementById("crst");
+        if (rst && canRestart) {
+          rst.onclick = function () {
+            confirmModal("确认重启 XrayR 服务？", function () {
+              api("/api/admin/nodes/" + state.nodeId + "/commands/restart-xrayr", { method: "POST", body: "{}" })
+                .then(function () {
+                  toast("已下发 RESTART");
+                  return loadNodeDetail();
+                })
+                .then(renderDetail)
+                .catch(function (e) {
+                  toast(e.message, true);
+                });
+            });
+          };
+        }
+        var appb = document.getElementById("capp");
+        if (appb && canApply) {
+          appb.onclick = function () {
+            var vid = n.pending_deploy_version_id || state.selectedVersionId;
+            if (!vid) {
+              toast("请先在设置中指定 pending_deploy_version_id 或于配置页选择版本", true);
+              return;
+            }
+            confirmModal("确认下发配置版本 " + vid + "？", function () {
+              api("/api/admin/nodes/" + state.nodeId + "/config-versions/" + vid + "/deploy", { method: "POST", body: "{}" })
+                .then(function () {
+                  toast("已创建 APPLY_CONFIG");
+                  return loadNodeDetail();
+                })
+                .then(renderDetail)
+                .catch(function (e) {
+                  toast(e.message, true);
+                });
+            });
+          };
+        }
+        var ins = document.getElementById("cins");
+        if (ins && canInstall && !installDisabled) {
+          ins.onclick = function () {
+            var sel = document.getElementById("artsel");
+            var aid = sel && parseInt(sel.value, 10);
+            if (!aid) {
+              toast("请选择制品", true);
+              return;
+            }
+            confirmModal("确认在本节点安装 XrayR？将下载制品、校验校验和、写入 systemd 并重启服务。", function () {
+              api("/api/admin/nodes/" + state.nodeId + "/commands/install-xrayr", {
+                method: "POST",
+                body: JSON.stringify({ artifact_id: aid }),
               })
-              .then(renderDetail)
-              .catch(function (e) {
-                toast(e.message, true);
-              });
-          });
-        };
-        document.getElementById("capp").onclick = function () {
-          const vid = n.pending_deploy_version_id || state.selectedVersionId;
-          if (!vid) {
-            toast("请先在设置中指定 pending_deploy_version_id 或于配置页查看某版本后下发", true);
-            return;
-          }
-          confirmModal("确认下发配置版本 " + vid + "？", function () {
-            api("/api/admin/nodes/" + state.nodeId + "/config-versions/" + vid + "/deploy", { method: "POST", body: "{}" })
-              .then(function () {
-                toast("已创建 APPLY_CONFIG");
-                return loadNodeDetail();
+                .then(function () {
+                  toast("已下发 INSTALL_XRAYR");
+                  return loadNodeDetail();
+                })
+                .then(renderDetail)
+                .catch(function (e) {
+                  toast(e.message, true);
+                });
+            });
+          };
+        }
+        var upg = document.getElementById("cupg");
+        if (upg && canUpgrade && !upgradeDisabled) {
+          upg.onclick = function () {
+            var sel = document.getElementById("artsel");
+            var aid = sel && parseInt(sel.value, 10);
+            if (!aid) {
+              toast("请选择制品", true);
+              return;
+            }
+            confirmModal("确认升级本节点 XrayR？将备份旧文件、替换二进制并重启服务。", function () {
+              api("/api/admin/nodes/" + state.nodeId + "/commands/upgrade-xrayr", {
+                method: "POST",
+                body: JSON.stringify({ artifact_id: aid }),
               })
-              .then(renderDetail)
-              .catch(function (e) {
-                toast(e.message, true);
-              });
-          });
-        };
-        document.getElementById("cins").onclick = function () {
-          toast("请在 Center 配置制品 URL 后，于请求体传入 download_url 与 sha256（当前 UI 占位）", true);
-        };
-        document.getElementById("cupg").onclick = function () {
-          toast("同上（Upgrade 占位）", true);
-        };
+                .then(function () {
+                  toast("已下发 UPGRADE_XRAYR");
+                  return loadNodeDetail();
+                })
+                .then(renderDetail)
+                .catch(function (e) {
+                  toast(e.message, true);
+                });
+            });
+          };
+        }
       }
       return;
     }
@@ -738,7 +855,10 @@
         '"/>' +
         '<p class="small">布尔权限</p><label><input type="checkbox" id="sar" ' +
         (n.allow_restart ? "checked" : "") +
-        '/> allow_restart（含安装意图）</label><br/>' +
+        '/> allow_restart</label><br/>' +
+        '<label><input type="checkbox" id="sai" ' +
+        (n.allow_install ? "checked" : "") +
+        '/> allow_install（安装 XrayR）</label><br/>' +
         '<label><input type="checkbox" id="sac" ' +
         (n.allow_config_apply ? "checked" : "") +
         '/> allow_config_apply</label><br/>' +
@@ -759,6 +879,7 @@
           remark: document.getElementById("snrmk").value || null,
           manage_status: document.getElementById("snms").value || null,
           allow_restart: document.getElementById("sar").checked,
+          allow_install: document.getElementById("sai").checked,
           allow_config_apply: document.getElementById("sac").checked,
           allow_upgrade: document.getElementById("sau").checked,
         };

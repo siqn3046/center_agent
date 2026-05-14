@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -70,6 +71,54 @@ func (c *Client) SignedJSON(method, path string, payload any) error {
 
 func (c *Client) SignedGET(path string) ([]byte, error) {
 	return c.signedRequestBytes(http.MethodGet, path, nil)
+}
+
+// SignedGETToFile 使用签名 GET 下载大文件到本地路径（如 XrayR 制品），超时较长。
+func (c *Client) SignedGETToFile(path, destPath string) error {
+	body := []byte{}
+	ts := time.Now().Unix()
+	nonce := randomNonce()
+	bh := hsign.BodyHash(body)
+	sig := hsign.Sign(c.Secret, http.MethodGet, path, ts, nonce, body)
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("X-Node-Id", c.NodeID)
+	req.Header.Set("X-Timestamp", strconv.FormatInt(ts, 10))
+	req.Header.Set("X-Nonce", nonce)
+	req.Header.Set("X-Body-Hash", bh)
+	req.Header.Set("X-Signature", sig)
+	dl := &http.Client{
+		Transport: c.HTTP.Transport,
+		Timeout:   45 * time.Minute,
+	}
+	resp, err := dl.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		return fmt.Errorf("GET %s: %d %s", path, resp.StatusCode, string(b))
+	}
+	tmp := destPath + ".part"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(f, io.LimitReader(resp.Body, 512<<20))
+	_ = f.Close()
+	if err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = os.Remove(destPath)
+	if err := os.Rename(tmp, destPath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (c *Client) signedRequest(method, path string, body []byte) error {

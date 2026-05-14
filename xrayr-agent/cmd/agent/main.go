@@ -143,9 +143,9 @@ func commandWorker(cfg *agentcfg.File, client *capi.Client, ch <-chan wsclient.P
 			case "APPLY_CONFIG":
 				cmdexec.RunApplyConfig(client, cfg, p.CommandID, p.Payload)
 			case "INSTALL_XRAYR":
-				cmdexec.RunInstallPlaceholder(client, p.CommandID)
+				cmdexec.RunInstallXrayR(client, cfg, p.CommandID, p.Payload)
 			case "UPGRADE_XRAYR":
-				cmdexec.RunUpgradePlaceholder(client, p.CommandID)
+				cmdexec.RunUpgradeXrayR(client, cfg, p.CommandID, p.Payload)
 			default:
 				_ = client.SignedJSON(http.MethodPost, "/api/agent/command/result", map[string]any{
 					"command_id": p.CommandID, "status": "FAILED", "error_message": "未知命令类型",

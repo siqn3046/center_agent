@@ -181,10 +181,3 @@ func RunApplyConfig(client *capi.Client, cfg *agentcfg.File, commandID string, p
 	})
 }
 
-func RunInstallPlaceholder(client *capi.Client, commandID string) {
-	result(client, commandID, "FAILED", "INSTALL_XRAYR 本轮未在 Agent 实现完整白名单安装", fmt.Errorf("not implemented"), nil)
-}
-
-func RunUpgradePlaceholder(client *capi.Client, commandID string) {
-	result(client, commandID, "FAILED", "UPGRADE_XRAYR 本轮未在 Agent 实现完整白名单升级", fmt.Errorf("not implemented"), nil)
-}
