@@ -97,41 +97,121 @@ wget -q https://raw.githubusercontent.com/siqn3046/center_agent/main/install.sh 
 
 [手动安装教程](https://xrayr-project.github.io/XrayR-doc/xrayr-xia-zai-he-an-zhuang/install/manual)
 
-### Center 与 xrayr-agent（集中管控，可选）
+### Center 与 Agent 集中管控部署
 
-本仓库在经典 XrayR 节点程序之外，还提供 **xrayr-center**（Web 管理端 + Admin/Agent API）与 **xrayr-agent**（部署在节点上的管控代理）。不需要集中管控时，可忽略本节，仅按上文安装节点端 XrayR 即可。
+本仓库提供 **xrayr-center**（管理端 + API）与 **xrayr-agent**（节点代理）。以下为 **全新 Linux 服务器** 上使用 Docker Compose 从 0 部署 Center 的推荐流程；更细的说明见 [`xrayr-center/README.md`](xrayr-center/README.md) 与 [`XRAYR_CENTER_PHASE6_DOCKER_INSTALL_DOC_RESULT.md`](XRAYR_CENTER_PHASE6_DOCKER_INSTALL_DOC_RESULT.md)。
 
-**环境要求**
+#### 1. 准备服务器
 
-- Docker：用于一键拉起 Center 与 Postgres（推荐）。
-- 或本地安装 **Go**（建议 1.22+）与 **PostgreSQL**，自行配置 `DATABASE_URL`。
+**推荐系统**
 
-**用 Docker 启动 Center（推荐）**
+- Ubuntu 22.04 / 24.04  
+- Debian 11 / 12  
+
+**最低参考**
+
+- 1 核 CPU、1GB 内存、约 10GB 磁盘  
+- 安全组 / 防火墙放行 Center Web 端口（默认 **8080**，与 `CENTER_PORT` 一致）  
+
+#### 2. 安装 Docker
+
+Ubuntu / Debian 示例：
 
 ```bash
-cd xrayr-center
-# 可选：安装脚本中 Agent 二进制来源（直链 + 校验和）
-export CENTER_AGENT_DOWNLOAD_URL=https://你的分发地址/xrayr-agent
-export CENTER_AGENT_SHA256=<64 位小写十六进制 sha256>
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg git
+curl -fsSL https://get.docker.com | sudo bash
+sudo systemctl enable docker
+sudo systemctl start docker
+docker version
+docker compose version
+```
+
+若提示找不到 `docker compose`，请安装 Compose 插件：
+
+```bash
+sudo apt install -y docker-compose-plugin
+docker compose version
+```
+
+#### 3. 创建目录并拉取仓库
+
+```bash
+sudo mkdir -p /opt/xrayr-center
+sudo chown -R "$USER:$USER" /opt/xrayr-center
+cd /opt/xrayr-center
+git clone https://github.com/siqn3046/center_agent.git .
+```
+
+#### 4. 配置 Center 环境变量
+
+```bash
+cd /opt/xrayr-center/xrayr-center
+cp .env.example .env
+nano .env   # 或使用 vim 等编辑器
+```
+
+`.env` 中 **生产环境务必修改** 的典型项（示例值请按你的环境替换）：
+
+```text
+CENTER_PORT=8080
+CENTER_PUBLIC_BASE_URL=http://你的服务器公网IP:8080
+
+POSTGRES_PASSWORD=请改成强密码
+CENTER_JWT_SECRET=请改成随机长密钥（建议 32 字符以上）
+
+CENTER_AGENT_DOWNLOAD_URL=https://你的分发地址/xrayr-agent-linux-amd64
+CENTER_AGENT_SHA256=64位小写十六进制sha256
+```
+
+**说明要点**
+
+- **`CENTER_PUBLIC_BASE_URL`**：节点与浏览器访问 Center 的根地址（含协议与端口），用于生成 **Agent 一键安装命令** 与制品下载 URL；有域名与 HTTPS 时建议写 `https://center.example.com`。  
+- **`CENTER_AGENT_DOWNLOAD_URL` / `CENTER_AGENT_SHA256`**：供 **`GET /install-agent.sh`** 注入，用于节点下载 **xrayr-agent** 二进制并校验；**两者缺一都会导致一键安装脚本无法正确下发 Agent**。  
+- **`CENTER_ARTIFACT_DIR`**：Compose 已默认挂载为容器内 `/data/artifacts`，用于 **XrayR 节点二进制制品**（与上面 Agent 直链不是同一概念，详见 Center README）。
+
+#### 5. 启动 Center
+
+```bash
+cd /opt/xrayr-center/xrayr-center
 docker compose up -d --build
 ```
 
-浏览器访问默认 `http://localhost:8080`（以 `CENTER_LISTEN` 为准）。首次默认账号见 `xrayr-center/README.md`（**登录后请立即改密**）。
+#### 6. 查看运行状态与日志
 
-**常用环境变量（Center）**
+```bash
+docker compose ps
+docker compose logs -f xrayr-center
+```
 
-| 变量 | 说明 |
-|------|------|
-| `DATABASE_URL` | PostgreSQL 连接串（必填） |
-| `CENTER_LISTEN` | 监听地址，默认 `:8080` |
-| `CENTER_JWT_SECRET` | 管理端 JWT 密钥 |
-| `CENTER_PUBLIC_BASE_URL` | 对外访问根 URL（安装脚本、回调等） |
-| `CENTER_ARTIFACT_DIR` | 节点 **XrayR 二进制制品** 存放目录（绝对路径）；不配则无法在管理端上传/登记制品供安装升级使用 |
-| `CENTER_AGENT_DOWNLOAD_URL` / `CENTER_AGENT_SHA256` | 节点安装脚本中 **Agent 二进制** 的直链与 sha256（与 `CENTER_ARTIFACT_DIR` 二选一策略见 `xrayr-center` 内配置说明） |
+#### 7. 访问后台
 
-更完整的变量说明见 [`xrayr-center/README.md`](xrayr-center/README.md)。
+浏览器打开 **`CENTER_PUBLIC_BASE_URL`**（例如 `http://你的服务器IP:8080` 或 `https://你的域名`）。  
+首次默认账号以 [`xrayr-center/README.md`](xrayr-center/README.md) 为准（默认 **`admin` / `admin123`**），**登录后请立即修改密码**。
 
-**本地编译 Center / Agent（不依赖 Docker 二进制时）**
+#### 8. 创建节点并安装 Agent
+
+1. 在 Center 后台进入节点管理，**创建节点**。  
+2. 复制界面生成的 **wget / curl 一键安装命令**（或到节点详情「概览」使用占位符 / **生成新的安装令牌**）。  
+3. 在 **目标 Linux 节点** 上以 root 或 sudo 执行，例如：
+
+```bash
+wget -qO- http://你的服务器IP:8080/install-agent.sh | sudo bash -s -- -e http://你的服务器IP:8080 -t <register_token>
+```
+
+或：
+
+```bash
+curl -fsSL http://你的服务器IP:8080/install-agent.sh | sudo bash -s -- -e http://你的服务器IP:8080 -t <register_token>
+```
+
+将 `http://你的服务器IP:8080` 换成与 **`.env` 中 `CENTER_PUBLIC_BASE_URL` 一致** 的地址。安装完成后 Agent 会注册并连接 Center。
+
+**常见错误速查**：容器未启动 / 端口未放行、`CENTER_PUBLIC_BASE_URL` 节点不可达、未配置 Agent 直链与 sha256、token 过期或复制不完整等——见 [`XRAYR_CENTER_PHASE6_DOCKER_INSTALL_DOC_RESULT.md`](XRAYR_CENTER_PHASE6_DOCKER_INSTALL_DOC_RESULT.md) 第九节。
+
+---
+
+**本地编译 Center / Agent（非 Docker 场景）**
 
 ```bash
 # Center
