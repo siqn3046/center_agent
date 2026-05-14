@@ -725,7 +725,7 @@
       esc(n.node_name || "") +
       "</span> <span class=\"small\">ID " +
       esc(String(n.id)) +
-      "</span></div><div><button class="btn" id="logout2">退出</button></div></div>" +
+      "</span></div><div><button class=\"btn\" id=\"logout2\">退出</button></div></div>" +
       '<div class="detail-header"><div><span class="badge ' +
       badgeManage(n.manage_status) +
       '">' +
