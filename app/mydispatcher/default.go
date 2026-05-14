@@ -42,23 +42,71 @@ func ensureTimeoutReader(r buf.Reader) buf.TimeoutReader {
 	return &buf.TimeoutWrapperReader{Reader: r}
 }
 
+// wrapDispatchLinkReader mirrors upstream dispatcher.WrapLink: wrap Reader with TimeoutWrapperReader,
+// attach uplink/downlink counters and online map. Ensures sniff path sees buf.TimeoutReader like core.
+func wrapDispatchLinkReader(ctx context.Context, pm policy.Manager, sm stats.Manager, link *transport.Link) *transport.Link {
+	if link == nil {
+		return nil
+	}
+	if _, ok := link.Reader.(*buf.TimeoutWrapperReader); !ok {
+		link.Reader = &buf.TimeoutWrapperReader{Reader: link.Reader}
+	}
+	tw := link.Reader.(*buf.TimeoutWrapperReader)
+	sessionInbound := session.InboundFromContext(ctx)
+	var user *protocol.MemoryUser
+	if sessionInbound != nil {
+		user = sessionInbound.User
+	}
+	if user != nil && len(user.Email) > 0 {
+		p := pm.ForLevel(user.Level)
+		if p.Stats.UserUplink {
+			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
+			if c, _ := stats.GetOrRegisterCounter(sm, name); c != nil {
+				tw.Counter = c
+			}
+		}
+		if p.Stats.UserDownlink {
+			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
+			if c, _ := stats.GetOrRegisterCounter(sm, name); c != nil {
+				link.Writer = &SizeStatWriter{
+					Counter: c,
+					Writer:  link.Writer,
+				}
+			}
+		}
+		if p.Stats.UserOnline {
+			name := "user>>>" + user.Email + ">>>online"
+			if om, _ := stats.GetOrRegisterOnlineMap(sm, name); om != nil {
+				userIP := sessionInbound.Source.Address.String()
+				om.AddIP(userIP)
+				context.AfterFunc(ctx, func() { om.RemoveIP(userIP) })
+			}
+		}
+	}
+	return link
+}
+
 type cachedReader struct {
 	sync.Mutex
 	reader buf.TimeoutReader
 	cache  buf.MultiBuffer
 }
 
-func (r *cachedReader) Cache(b *buf.Buffer) {
-	mb, _ := r.reader.ReadMultiBufferTimeout(time.Millisecond * 100)
+func (r *cachedReader) Cache(b *buf.Buffer, deadline time.Duration) error {
+	mb, err := r.reader.ReadMultiBufferTimeout(deadline)
+	if err != nil {
+		return err
+	}
 	r.Lock()
 	if !mb.IsEmpty() {
 		r.cache, _ = buf.MergeMulti(r.cache, mb)
 	}
 	b.Clear()
-	rawBytes := b.Extend(buf.Size)
+	rawBytes := b.Extend(min(r.cache.Len(), b.Cap()))
 	n := r.cache.Copy(rawBytes)
 	b.Resize(0, int32(n))
 	r.Unlock()
+	return nil
 }
 
 func (r *cachedReader) readInternal() buf.MultiBuffer {
@@ -318,13 +366,18 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		content = new(session.Content)
 		ctx = session.ContextWithContent(ctx, content)
 	}
+	outbound = wrapDispatchLinkReader(ctx, d.policy, d.stats, outbound)
 	sniffingRequest := content.SniffingRequest
 	if !sniffingRequest.Enabled {
 		go d.routedDispatch(ctx, outbound, destination)
 	} else {
 		go func() {
+			tr, ok := outbound.Reader.(buf.TimeoutReader)
+			if !ok {
+				tr = ensureTimeoutReader(outbound.Reader)
+			}
 			cReader := &cachedReader{
-				reader: ensureTimeoutReader(outbound.Reader),
+				reader: tr,
 			}
 			outbound.Reader = cReader
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
@@ -349,7 +402,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 }
 
 func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, network net.Network) (SniffResult, error) {
-	payload := buf.New()
+	payload := buf.NewWithSize(32767)
 	defer payload.Release()
 
 	sniffer := NewSniffer(ctx)
@@ -361,26 +414,35 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 	}
 
 	contentResult, contentErr := func() (SniffResult, error) {
+		cacheDeadline := 200 * time.Millisecond
 		totalAttempt := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			default:
-				totalAttempt++
-				if totalAttempt > 2 {
-					return nil, errSniffingTimeout
+				cachingStartingTimeStamp := time.Now()
+				err := cReader.Cache(payload, cacheDeadline)
+				if err != nil {
+					return nil, err
 				}
+				cachingTimeElapsed := time.Since(cachingStartingTimeStamp)
+				cacheDeadline -= cachingTimeElapsed
 
-				cReader.Cache(payload)
 				if !payload.IsEmpty() {
 					result, err := sniffer.Sniff(ctx, payload.Bytes(), network)
-					if err != common.ErrNoClue {
+					switch err {
+					case common.ErrNoClue:
+						totalAttempt++
+					case protocol.ErrProtoNeedMoreData:
+					default:
 						return result, err
 					}
+				} else {
+					totalAttempt++
 				}
-				if payload.IsFull() {
-					return nil, errUnknownContent
+				if totalAttempt >= 2 || cacheDeadline <= 0 {
+					return nil, errSniffingTimeout
 				}
 			}
 		}
