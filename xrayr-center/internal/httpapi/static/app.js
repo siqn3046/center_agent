@@ -99,6 +99,335 @@
     document.body.removeChild(ta);
   }
 
+  /** 一键部署弹窗：内存中的 register token（关闭弹窗后清空） */
+  var deployOneClickToken = null;
+
+  /** 从 issue-install-token / createNode 返回的 install_command_curl 中解析 -t 后的令牌 */
+  function extractRegisterTokenFromInstallCurl(curl) {
+    if (!curl || typeof curl !== "string") return "";
+    var m = curl.match(/-t\s+'((?:\\'|[^'])*)'/);
+    if (m) return m[1].replace(/\\'/g, "'");
+    m = curl.match(/-t\s+"((?:\\"|[^"])*)"/);
+    if (m) return m[1].replace(/\\"/g, '"');
+    m = curl.match(/-t\s+([0-9a-fA-F]+)\b/);
+    if (m) return m[1];
+    return "";
+  }
+
+  function isLikelyInstallRegisterToken(t) {
+    if (!t || typeof t !== "string") return false;
+    if (t.indexOf("REGISTER_TOKEN") >= 0) return false;
+    return /^[0-9a-fA-F]{32,128}$/.test(t.trim());
+  }
+
+  function readDeployModalForm() {
+    var root = document.getElementById("modal-root");
+    if (!root) return {};
+    function chk(id) {
+      var el = root.querySelector("#" + id);
+      return !!(el && el.checked);
+    }
+    function val(id) {
+      var el = root.querySelector("#" + id);
+      return el ? String(el.value || "") : "";
+    }
+    return {
+      disable_remote_control: chk("dc-drc"),
+      disable_auto_update: chk("dc-dau"),
+      insecure_tls: chk("dc-ins"),
+      github_proxy_enabled: chk("dc-gp"),
+      github_proxy: val("dc-gpv").trim(),
+      install_dir_enabled: chk("dc-id"),
+      install_dir: val("dc-idv").trim() || "/opt/xrayr",
+      service_name_enabled: chk("dc-sn"),
+      service_name: val("dc-snv").trim() || "XrayR",
+      agent_only: chk("dc-ao"),
+      force_replace_xrayr: chk("dc-fr"),
+      keep_config: chk("dc-kc"),
+      use_center_config: chk("dc-uc"),
+      verbose: chk("dc-vb"),
+      include_nics_enabled: chk("dc-in"),
+      include_nics: val("dc-inv").trim(),
+      exclude_nics_enabled: chk("dc-ex"),
+      exclude_nics: val("dc-exv").trim() || "lo,docker0,br-",
+      mount_points_enabled: chk("dc-mp"),
+      mount_points: val("dc-mpv").trim() || "/",
+      interval_enabled: chk("dc-it"),
+      interval: val("dc-itv").trim() || "10",
+    };
+  }
+
+  function buildOneClickInstallCommand(origin, token, f) {
+    if (!token) return "（正在获取安装令牌…）";
+    var parts = ["token=" + encodeURIComponent(token), "os=" + encodeURIComponent("linux")];
+    if (f.disable_remote_control) parts.push("disable_remote_control=" + encodeURIComponent("true"));
+    if (f.disable_auto_update) parts.push("disable_auto_update=" + encodeURIComponent("true"));
+    if (f.insecure_tls) parts.push("insecure_tls=" + encodeURIComponent("true"));
+    if (f.github_proxy_enabled && f.github_proxy) parts.push("github_proxy=" + encodeURIComponent(f.github_proxy));
+    if (f.install_dir_enabled && f.install_dir) parts.push("install_dir=" + encodeURIComponent(f.install_dir));
+    if (f.service_name_enabled && f.service_name) parts.push("service_name=" + encodeURIComponent(f.service_name));
+    if (f.agent_only) parts.push("agent_only=" + encodeURIComponent("true"));
+    if (f.force_replace_xrayr) parts.push("force_replace_xrayr=" + encodeURIComponent("true"));
+    if (f.keep_config) parts.push("keep_config=" + encodeURIComponent("true"));
+    if (f.use_center_config) parts.push("use_center_config=" + encodeURIComponent("true"));
+    if (f.verbose) parts.push("verbose=" + encodeURIComponent("true"));
+    if (f.include_nics_enabled && f.include_nics) parts.push("include_nics=" + encodeURIComponent(f.include_nics));
+    if (f.exclude_nics_enabled && f.exclude_nics) parts.push("exclude_nics=" + encodeURIComponent(f.exclude_nics));
+    if (f.mount_points_enabled && f.mount_points) parts.push("mount_points=" + encodeURIComponent(f.mount_points));
+    if (f.interval_enabled && f.interval) parts.push("interval=" + encodeURIComponent(f.interval));
+    var qs = parts.join("&");
+    var url = String(origin || "").replace(/\/$/, "") + "/api/public/install-node.sh?" + qs;
+    var curl0 = f.insecure_tls ? "curl -fsSL -k " : "curl -fsSL ";
+    return curl0 + '"' + url + '" -o install-xrayr-node.sh && bash install-xrayr-node.sh';
+  }
+
+  function updateDeployModalCommand() {
+    var pre = document.getElementById("dc-cmd");
+    if (!pre) return;
+    if (!deployOneClickToken) {
+      pre.textContent = "";
+      return;
+    }
+    pre.textContent = buildOneClickInstallCommand(window.location.origin, deployOneClickToken, readDeployModalForm());
+  }
+
+  function closeDeployOneClickModal() {
+    deployOneClickToken = null;
+    var root = document.getElementById("modal-root");
+    if (root) root.innerHTML = "";
+  }
+
+  function wireDeployOneClickModal() {
+    var root = document.getElementById("modal-root");
+    if (!root) return;
+    var bg = root.querySelector(".modal-bg");
+    if (bg) {
+      bg.addEventListener("click", function (e) {
+        if (e.target === bg) closeDeployOneClickModal();
+      });
+    }
+    var closeBtn = root.querySelector("#dc-close");
+    if (closeBtn) {
+      closeBtn.onclick = function () {
+        closeDeployOneClickModal();
+      };
+    }
+    var copyBtn = root.querySelector("#dc-copy");
+    if (!copyBtn) return;
+    copyBtn.onclick = function () {
+      var t = (root.querySelector("#dc-cmd") || {}).textContent || "";
+      if (!t || t.indexOf("（") === 0) {
+        toast("暂无可复制命令", true);
+        return;
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(t).then(
+          function () {
+            toast("复制成功");
+          },
+          function () {
+            copyTextToClipboard(t);
+          }
+        );
+      } else {
+        copyTextToClipboard(t);
+      }
+    };
+    root.querySelectorAll("input, select, textarea").forEach(function (inp) {
+      inp.addEventListener("change", updateDeployModalCommand);
+      inp.addEventListener("input", updateDeployModalCommand);
+    });
+    updateDeployModalCommand();
+  }
+
+  function renderDeployOneClickModalShell(loadingMsg) {
+    return (
+      '<div class="modal-bg">' +
+      '<div class="modal modal-install" role="dialog" aria-modal="true" aria-labelledby="dc-title">' +
+      '<div class="modal-install-head">' +
+      '<h3 id="dc-title">一键部署指令</h3>' +
+      '<button type="button" class="btn" id="dc-close" aria-label="关闭">×</button>' +
+      "</div>" +
+      (loadingMsg
+        ? '<p class="small dc-install-loading">' + esc(loadingMsg) + "</p>"
+        : "") +
+      "</div></div>"
+    );
+  }
+
+  function renderDeployOneClickModalForm() {
+    var opt = function (id, label, extraInputHtml) {
+      return (
+        '<div class="install-opt-cell">' +
+        '<label class="install-opt-label"><input type="checkbox" id="' +
+        id +
+        '" /> ' +
+        esc(label) +
+        "</label>" +
+        (extraInputHtml || "") +
+        "</div>"
+      );
+    };
+    var condInput = function (checkId, inputId, placeholder, defVal) {
+      return (
+        '<div class="install-opt-sub" data-for="' +
+        checkId +
+        '">' +
+        '<input type="text" class="input install-opt-input" id="' +
+        inputId +
+        '" placeholder="' +
+        esc(placeholder) +
+        '" value="' +
+        esc(defVal) +
+        '"/>' +
+        "</div>"
+      );
+    };
+    return (
+      '<div class="modal-bg">' +
+      '<div class="modal modal-install" role="dialog" aria-modal="true" aria-labelledby="dc-title">' +
+      '<div class="modal-install-head">' +
+      '<h3 id="dc-title">一键部署指令</h3>' +
+      '<button type="button" class="btn" id="dc-close" aria-label="关闭">×</button>' +
+      "</div>" +
+      '<div class="os-tab-row">' +
+      '<button type="button" class="os-tab active" disabled>Linux</button>' +
+      '<button type="button" class="os-tab os-tab-disabled" disabled>Windows<span class="os-tab-hint">暂未支持</span></button>' +
+      '<button type="button" class="os-tab os-tab-disabled" disabled>macOS<span class="os-tab-hint">暂未支持</span></button>' +
+      "</div>" +
+      '<p class="small install-opt-section-title">安装选项</p>' +
+      '<div class="install-opt-grid">' +
+      opt("dc-drc", "禁用远程控制") +
+      opt("dc-dau", "禁用自动更新") +
+      opt("dc-ins", "忽略 TLS 证书校验") +
+      opt("dc-vb", "启用详细日志") +
+      opt("dc-gp", "使用 GitHub 代理", condInput("dc-gp", "dc-gpv", "https://gh-proxy.com/", "")) +
+      opt("dc-ao", "只安装 Agent，不替换 XrayR") +
+      opt("dc-id", "指定安装目录", condInput("dc-id", "dc-idv", "/opt/xrayr", "/opt/xrayr")) +
+      opt("dc-fr", "强制替换已有 XrayR") +
+      opt("dc-sn", "指定服务名称", condInput("dc-sn", "dc-snv", "XrayR", "XrayR")) +
+      opt("dc-kc", "保留现有 config.yml") +
+      opt("dc-uc", "使用 Center 下发配置") +
+      opt("dc-in", "只监控指定网卡", condInput("dc-in", "dc-inv", "eth0,ens3", "")) +
+      opt("dc-ex", "排除指定网卡", condInput("dc-ex", "dc-exv", "lo,docker0,br-", "lo,docker0,br-")) +
+      opt("dc-mp", "只监控指定挂载点", condInput("dc-mp", "dc-mpv", "/", "/")) +
+      opt("dc-it", "采集间隔秒数", condInput("dc-it", "dc-itv", "10", "10")) +
+      "</div>" +
+      '<label class="small install-cmd-label">命令预览（安装令牌仅出现在此区域）</label>' +
+      '<pre class="command-preview" id="dc-cmd"></pre>' +
+      '<p class="small install-footnote">请在目标 VPS 使用 <strong>root</strong> 执行。脚本由 Center 动态生成；若 Center 未配置 Agent 下载源（CENTER_ARTIFACT_DIR + CENTER_PUBLIC_BASE_URL + CENTER_AGENT_VERSION，或 CENTER_AGENT_DOWNLOAD_URL + CENTER_AGENT_SHA256），脚本将无法下载 xrayr-agent。勾选「忽略 TLS」时下载命令会带 <code>-k</code>。</p>' +
+      '<button type="button" class="btn btn-primary btn-copy-full" id="dc-copy">复制</button>' +
+      "</div></div>"
+    );
+  }
+
+  function syncDeploySubRows() {
+    var root = document.getElementById("modal-root");
+    if (!root) return;
+    root.querySelectorAll(".install-opt-sub").forEach(function (sub) {
+      var cid = sub.getAttribute("data-for");
+      var cb = cid ? root.querySelector("#" + cid) : null;
+      sub.style.display = cb && cb.checked ? "block" : "none";
+    });
+    updateDeployModalCommand();
+  }
+
+  function openOneClickDeployModal(nodeId, opts) {
+    opts = opts || {};
+    var root = document.getElementById("modal-root");
+    if (!root) return;
+    deployOneClickToken = null;
+    root.innerHTML = renderDeployOneClickModalShell("正在签发安装令牌…");
+
+    var bg = root.querySelector(".modal-bg");
+    if (bg) {
+      bg.addEventListener("click", function (e) {
+        if (e.target === bg) closeDeployOneClickModal();
+      });
+    }
+    root.querySelector("#dc-close").onclick = function () {
+      closeDeployOneClickModal();
+    };
+
+    function applyTokenAndShow(tok) {
+      deployOneClickToken = tok;
+      root.innerHTML = renderDeployOneClickModalForm();
+      var bg2 = root.querySelector(".modal-bg");
+      if (bg2) {
+        bg2.addEventListener("click", function (e) {
+          if (e.target === bg2) closeDeployOneClickModal();
+        });
+      }
+      root.querySelectorAll(".install-opt-label input[type=checkbox]").forEach(function (c) {
+        c.addEventListener("change", syncDeploySubRows);
+      });
+      syncDeploySubRows();
+      wireDeployOneClickModal();
+    }
+
+    var skipIssue = false;
+    var preTok = "";
+    if (opts.fromDetail && state.view === "detail" && state.nodeId === nodeId && state.node) {
+      preTok = extractRegisterTokenFromInstallCurl(state.node.install_command_curl || "");
+      if (isLikelyInstallRegisterToken(preTok)) skipIssue = true;
+    }
+
+    if (skipIssue) {
+      applyTokenAndShow(preTok);
+      return;
+    }
+
+    api("/api/admin/nodes/" + nodeId + "/issue-install-token", { method: "POST", body: "{}" })
+      .then(function (j) {
+        var tok = extractRegisterTokenFromInstallCurl(j.install_command_curl || "");
+        if (!isLikelyInstallRegisterToken(tok)) {
+          root.innerHTML = renderDeployOneClickModalShell("");
+          root.querySelector(".modal-install").insertAdjacentHTML(
+            "beforeend",
+            '<p class="small" style="color:var(--bad)">无法解析安装令牌，请重试或查看网络响应。</p><button type="button" class="btn" id="dc-close2">关闭</button>'
+          );
+          var bg3 = root.querySelector(".modal-bg");
+          if (bg3) {
+            bg3.addEventListener("click", function (e) {
+              if (e.target === bg3) closeDeployOneClickModal();
+            });
+          }
+          root.querySelector("#dc-close").onclick = function () {
+            closeDeployOneClickModal();
+          };
+          root.querySelector("#dc-close2").onclick = function () {
+            closeDeployOneClickModal();
+          };
+          return;
+        }
+        if (state.view === "detail" && state.nodeId === nodeId && state.node) {
+          state.node.install_command_wget = j.install_command_wget;
+          state.node.install_command_curl = j.install_command_curl;
+          state.node.expires_at = j.expires_at;
+        }
+        applyTokenAndShow(tok);
+      })
+      .catch(function (e) {
+        root.innerHTML = renderDeployOneClickModalShell("");
+        root.querySelector(".modal-install").insertAdjacentHTML(
+          "beforeend",
+          '<p class="small" style="color:var(--bad)">' + esc(e.message || String(e)) + '</p><button type="button" class="btn" id="dc-close2">关闭</button>'
+        );
+        var bg4 = root.querySelector(".modal-bg");
+        if (bg4) {
+          bg4.addEventListener("click", function (e) {
+            if (e.target === bg4) closeDeployOneClickModal();
+          });
+        }
+        root.querySelector("#dc-close").onclick = function () {
+          closeDeployOneClickModal();
+        };
+        root.querySelector("#dc-close2").onclick = function () {
+          closeDeployOneClickModal();
+        };
+      });
+  }
+
   function showAgentInstallModal(title, wget, curl, optNodeId) {
     const root = document.getElementById("modal-root");
     var goBtn =
@@ -392,7 +721,10 @@
           (n.xrayr_running ? "运行中" : "未运行/未知") +
           " · 心跳 " +
           esc(fmtTime(n.last_heartbeat_at)) +
-          "</div></div>"
+          '</div><div style="margin-top:10px">' +
+          '<button type="button" class="btn btn-primary dc-card-deploy" data-nid="' +
+          n.id +
+          '">部署指令</button></div></div>'
         );
       })
       .join("");
@@ -503,7 +835,7 @@
       artifactPanel +
       (state.grid
         ? '<div class="cards" id="cardbox">' + cards + "</div>"
-        : '<div class="panel" style="overflow:auto"><table class="data"><thead><tr><th>ID</th><th>名称</th><th>在线</th><th>CPU</th><th>内存</th><th>管理</th><th>安装状态</th></tr></thead><tbody id="tbody"></tbody></table></div>') +
+        : '<div class="panel" style="overflow:auto"><table class="data"><thead><tr><th>ID</th><th>名称</th><th>在线</th><th>CPU</th><th>内存</th><th>管理</th><th>安装状态</th><th>操作</th></tr></thead><tbody id="tbody"></tbody></table></div>') +
       "";
 
     document.getElementById("logout").onclick = function () {
@@ -626,11 +958,18 @@
     });
 
     document.querySelectorAll(".node-card").forEach(function (el) {
-      el.onclick = function () {
+      el.onclick = function (e) {
+        if (e.target.closest && e.target.closest(".dc-card-deploy")) return;
         state.nodeId = parseInt(el.getAttribute("data-nid"), 10);
         state.view = "detail";
         state.tab = "overview";
         bootDetail();
+      };
+    });
+    document.querySelectorAll(".dc-card-deploy").forEach(function (b) {
+      b.onclick = function (e) {
+        e.stopPropagation();
+        openOneClickDeployModal(parseInt(b.getAttribute("data-nid"), 10), { fromDetail: false });
       };
     });
 
@@ -656,16 +995,25 @@
               esc(n.manage_status) +
               "</td><td>" +
               esc(n.install_state) +
-              "</td></tr>"
+              '</td><td><button type="button" class="btn btn-primary dc-row-deploy" data-nid="' +
+              n.id +
+              '">部署指令</button></td></tr>'
             );
           })
           .join("");
         tb.querySelectorAll("tr").forEach(function (r) {
-          r.onclick = function () {
+          r.onclick = function (ev) {
+            if (ev.target.closest && ev.target.closest(".dc-row-deploy")) return;
             state.nodeId = parseInt(r.getAttribute("data-nid"), 10);
             state.view = "detail";
             state.tab = "overview";
             bootDetail();
+          };
+        });
+        tb.querySelectorAll(".dc-row-deploy").forEach(function (b) {
+          b.onclick = function (e) {
+            e.stopPropagation();
+            openOneClickDeployModal(parseInt(b.getAttribute("data-nid"), 10), { fromDetail: false });
           };
         });
       }
@@ -735,7 +1083,8 @@
       '">' +
       esc(n.install_state || "") +
       "</span></div>" +
-      '<button class="btn" id="script">高级：install-script.sh</button></div>' +
+      '<div class="detail-actions"><button class="btn btn-primary" type="button" id="deploy-cmd">部署指令</button> ' +
+      '<button class="btn" type="button" id="script">高级：install-script.sh</button></div></div>' +
       tabBar() +
       '<div id="tabbody"></div>';
 
@@ -753,6 +1102,9 @@
       const tok = prompt("粘贴 register_token");
       if (!tok) return;
       window.open("/api/admin/nodes/" + state.nodeId + "/install-script.sh?register_token=" + encodeURIComponent(tok));
+    };
+    document.getElementById("deploy-cmd").onclick = function () {
+      openOneClickDeployModal(state.nodeId, { fromDetail: true });
     };
     document.querySelectorAll(".tabs button").forEach(function (b) {
       b.onclick = function () {

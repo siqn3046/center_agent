@@ -46,6 +46,7 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	r.Get("/api/public/artifacts/xrayr-agent/{version}/{file}", s.getPublicArtifactFile)
+	r.Get("/api/public/install-node.sh", s.installNodePublicScript)
 	r.Get("/install-agent.sh", s.serveInstallAgentSh)
 
 	r.Post("/api/admin/login", s.postAdminLogin)

@@ -148,9 +148,102 @@ textarea.code {
   padding: 18px; max-width: 420px; width: 100%; box-shadow: var(--shadow);
 }
 .modal h3 { margin: 0 0 10px; font-size: 1rem; }
+.modal.modal-install {
+  max-width: min(960px, 92vw);
+  width: 100%;
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  backdrop-filter: blur(12px);
+}
+.modal-install-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.modal-install-head h3 { margin: 0; font-size: 1.08rem; }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.os-tab-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.os-tab {
+  border: 1px solid var(--glass2);
+  background: var(--glass);
+  color: var(--text);
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: default;
+  text-align: center;
+}
+.os-tab.active {
+  background: linear-gradient(135deg, #4a7dff, #355dff);
+  border-color: transparent;
+  color: #fff;
+}
+.os-tab.os-tab-disabled { opacity: 0.5; }
+.os-tab-hint {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.install-opt-section-title { margin: 0 0 10px; }
+.install-opt-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+  margin-bottom: 14px;
+}
+.install-opt-cell {
+  border: 1px solid var(--glass2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.install-opt-label {
+  font-size: 0.86rem;
+  color: var(--text);
+  cursor: pointer;
+  display: block;
+}
+.install-opt-sub { margin-top: 8px; display: none; }
+.install-opt-input { width: 100%; margin-top: 0; }
+.install-cmd-label { display: block; margin-bottom: 6px; }
+.command-preview {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--glass2);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 0 0 10px;
+  max-height: 240px;
+  overflow: auto;
+  color: var(--text);
+}
+.install-footnote { margin-bottom: 12px; }
+.install-footnote code { font-size: 0.78em; }
+.btn-copy-full {
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 0.95rem;
+}
+.dc-install-loading { margin: 0; padding: 12px 0 4px; }
 .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .loading { opacity: 0.55; pointer-events: none; }
 .small { font-size: 0.8rem; color: var(--muted); }
 @media (max-width: 720px) {
   .cards { grid-template-columns: 1fr; }
+  .install-opt-grid { grid-template-columns: 1fr; }
+  .os-tab-row { grid-template-columns: 1fr; }
 }
