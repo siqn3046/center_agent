@@ -12,6 +12,39 @@
       .replace(/"/g, "&quot;");
   }
 
+  /** 命令 result_json 摘要（不含 progress 数组，避免与「进度」列重复） */
+  function formatCmdResult(rj) {
+    if (!rj || typeof rj !== "object") return "";
+    var parts = [];
+    if (rj.stage != null && String(rj.stage) !== "") parts.push("stage: " + String(rj.stage));
+    if (rj.message != null && String(rj.message) !== "") parts.push("message: " + String(rj.message));
+    if (rj.error != null && String(rj.error) !== "") parts.push("error: " + String(rj.error));
+    var rest = {};
+    for (var k in rj) {
+      if (!Object.prototype.hasOwnProperty.call(rj, k)) continue;
+      if (k === "progress") continue;
+      rest[k] = rj[k];
+    }
+    var skip = { stage: 1, message: 1, error: 1, progress: 1 };
+    var keys = Object.keys(rest).filter(function (k) {
+      return !skip[k];
+    });
+    if (keys.length) {
+      var o = {};
+      keys.forEach(function (k) {
+        o[k] = rest[k];
+      });
+      try {
+        parts.push(JSON.stringify(o));
+      } catch (e) {
+        parts.push("[result]");
+      }
+    }
+    var s = parts.join(" | ");
+    if (s.length > 560) return s.slice(0, 560) + "…";
+    return s;
+  }
+
   function toast(msg, err) {
     const w = document.getElementById("toasts");
     const el = document.createElement("div");
@@ -96,6 +129,13 @@
     return v === true || v === 1;
   }
 
+  function artifactEnabled(x) {
+    if (x == null) return false;
+    if (x.enabled === false) return false;
+    if (x.disabled === true) return false;
+    return true;
+  }
+
   function archMatchNode(agentArch, artArch) {
     if (!agentArch || !artArch) return false;
     var a = String(agentArch).toLowerCase();
@@ -108,7 +148,8 @@
   function artifactsForNode(n, list) {
     if (!list || !n || !n.agent_os || !n.agent_arch) return [];
     return list.filter(function (x) {
-      return String(x.target_os).toLowerCase() === String(n.agent_os).toLowerCase() && archMatchNode(n.agent_arch, x.target_arch);
+      if (!artifactEnabled(x)) return false;
+      return String(x.os || x.target_os).toLowerCase() === String(n.agent_os).toLowerCase() && archMatchNode(n.agent_arch, x.arch || x.target_arch);
     });
   }
 
@@ -142,6 +183,12 @@
   function loadSummary() {
     return api("/api/admin/dashboard/summary").then(function (s) {
       state.summary = s;
+    });
+  }
+
+  function loadArtifacts() {
+    return api("/api/admin/artifacts").then(function (a) {
+      state.artifacts = a || [];
     });
   }
 
@@ -283,6 +330,74 @@
       })
       .join("");
 
+    const artRows = (state.artifacts || [])
+      .map(function (a) {
+        var nm = a.name || a.display_name || "";
+        var ver = a.version || a.version_label || "";
+        var osStr = a.os || a.target_os || "";
+        var arch = a.arch || a.target_arch || "";
+        var shaFull = a.sha256 || "";
+        var shaShort = shaFull.length > 18 ? shaFull.slice(0, 18) + "…" : shaFull;
+        var en = artifactEnabled(a);
+        var sz = a.size_bytes != null && a.size_bytes !== "" ? String(a.size_bytes) : "-";
+        return (
+          "<tr><td>" +
+          (a.id || "") +
+          "</td><td>" +
+          esc(nm) +
+          "</td><td>" +
+          esc(ver) +
+          "</td><td>" +
+          esc(osStr) +
+          "</td><td>" +
+          esc(arch) +
+          "</td><td class=\"small\" title=\"" +
+          esc(shaFull) +
+          "\">" +
+          esc(shaShort) +
+          "</td><td>" +
+          esc(sz) +
+          "</td><td>" +
+          (en ? "启用" : "停用") +
+          '</td><td><button type="button" class="btn btn-ghost btn-art-toggle" data-art-id="' +
+          esc(String(a.id)) +
+          '" data-next="' +
+          (en ? "0" : "1") +
+          '">' +
+          (en ? "停用" : "启用") +
+          "</button></td></tr>"
+        );
+      })
+      .join("");
+    const artifactPanel =
+      '<div class="panel" style="margin:12px 16px">' +
+      "<h3 style=\"margin-top:0\">制品管理（XrayR 二进制）</h3>" +
+      '<p class="small">登记前文件须已位于 CENTER_ARTIFACT_DIR 下；上传会写入 <code>版本/linux-架构/</code> 目录。sha256 留空则上传后由服务端计算。</p>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start">' +
+      '<form id="formArtUpload" style="flex:1;min-width:280px" class="stack">' +
+      "<b>上传并登记</b>" +
+      '<input class="input" name="name" placeholder="name" required />' +
+      '<input class="input" name="version" placeholder="version" required />' +
+      '<input type="hidden" name="os" value="linux" />' +
+      '<label class="small">架构</label><select class="input" name="arch"><option value="amd64">amd64</option><option value="arm64">arm64</option></select>' +
+      '<input class="input" name="sha256" placeholder="sha256（可选，留空则自动计算）" />' +
+      '<input class="input" type="file" name="file" required />' +
+      '<button class="btn btn-primary" type="submit">上传</button>' +
+      "</form>" +
+      '<div style="flex:1;min-width:280px" class="stack">' +
+      "<b>仅登记（磁盘上已有文件）</b>" +
+      '<input class="input" id="reg_name" placeholder="name" />' +
+      '<input class="input" id="reg_ver" placeholder="version" />' +
+      '<select class="input" id="reg_arch"><option value="amd64">amd64</option><option value="arm64">arm64</option></select>' +
+      '<input class="input" id="reg_sha" placeholder="sha256（必填）" />' +
+      '<input class="input" id="reg_fn" placeholder="filename（与 relpath 二选一）" />' +
+      '<input class="input" id="reg_rel" placeholder="storage_relpath（相对制品目录）" />' +
+      '<button class="btn" type="button" id="btnRegArt">登记</button>' +
+      "</div></div>" +
+      '<div style="overflow:auto"><table class="data"><thead><tr><th>ID</th><th>名称</th><th>版本</th><th>OS</th><th>arch</th><th>sha256</th><th>大小(bytes)</th><th>状态</th><th>操作</th></tr></thead><tbody>' +
+      artRows +
+      "</tbody></table></div></div>";
+
     document.getElementById("app").innerHTML =
       '<div class="topbar"><div class="brand">XrayR Center</div><div><button class="btn" id="logout">退出</button></div></div>' +
       '<div class="grid-stats">' +
@@ -318,6 +433,7 @@
       (!state.grid ? "active" : "") +
       '">表格</button></div>' +
       '<button class="btn btn-primary" id="newnode">创建节点</button></div>' +
+      artifactPanel +
       (state.grid
         ? '<div class="cards" id="cardbox">' + cards + "</div>"
         : '<div class="panel" style="overflow:auto"><table class="data"><thead><tr><th>ID</th><th>名称</th><th>在线</th><th>CPU</th><th>内存</th><th>管理</th><th>安装状态</th></tr></thead><tbody id="tbody"></tbody></table></div>') +
@@ -353,6 +469,94 @@
           toast(e.message, true);
         });
     };
+
+    var formArtUp = document.getElementById("formArtUpload");
+    if (formArtUp) {
+      formArtUp.onsubmit = function (ev) {
+        ev.preventDefault();
+        var fd = new FormData(formArtUp);
+        var sh = (fd.get("sha256") || "").toString().trim();
+        if (!sh) fd.delete("sha256");
+        var tok = localStorage.getItem(TOKEN_KEY);
+        fetch("/api/admin/artifacts/upload", {
+          method: "POST",
+          headers: tok ? { Authorization: "Bearer " + tok } : {},
+          body: fd,
+        })
+          .then(function (r) {
+            return r.text().then(function (txt) {
+              var j = null;
+              if (txt) {
+                try {
+                  j = JSON.parse(txt);
+                } catch (e) {}
+              }
+              if (!r.ok) {
+                throw new Error((j && (j.message || j.error)) || txt || r.statusText);
+              }
+              return j;
+            });
+          })
+          .then(function (j) {
+            toast("上传成功，id=" + (j && j.id) + (j && j.sha256 ? " sha256=" + j.sha256.slice(0, 16) + "…" : ""));
+            formArtUp.reset();
+            return refreshDash();
+          })
+          .catch(function (e) {
+            toast(e.message, true);
+          });
+      };
+    }
+    var btnRegArt = document.getElementById("btnRegArt");
+    if (btnRegArt) {
+      btnRegArt.onclick = function () {
+        var payload = {
+          name: document.getElementById("reg_name").value.trim(),
+          version: document.getElementById("reg_ver").value.trim(),
+          arch: document.getElementById("reg_arch").value,
+          os: "linux",
+          sha256: document.getElementById("reg_sha").value.trim(),
+        };
+        var fn = document.getElementById("reg_fn").value.trim();
+        var rel = document.getElementById("reg_rel").value.trim();
+        if (fn) payload.filename = fn;
+        if (rel) payload.storage_relpath = rel;
+        if (!payload.name || !payload.version || !payload.sha256) {
+          toast("请填写 name、version、sha256", true);
+          return;
+        }
+        api("/api/admin/artifacts", { method: "POST", body: JSON.stringify(payload) })
+          .then(function () {
+            toast("已登记制品");
+            document.getElementById("reg_name").value = "";
+            document.getElementById("reg_ver").value = "";
+            document.getElementById("reg_sha").value = "";
+            document.getElementById("reg_fn").value = "";
+            document.getElementById("reg_rel").value = "";
+            return refreshDash();
+          })
+          .catch(function (e) {
+            toast(e.message, true);
+          });
+      };
+    }
+    document.querySelectorAll(".btn-art-toggle").forEach(function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute("data-art-id");
+        var nextEn = b.getAttribute("data-next") === "1";
+        api("/api/admin/artifacts/" + id, {
+          method: "PATCH",
+          body: JSON.stringify({ enabled: nextEn }),
+        })
+          .then(function () {
+            toast(nextEn ? "已启用" : "已停用");
+            return refreshDash();
+          })
+          .catch(function (e) {
+            toast(e.message, true);
+          });
+      };
+    });
 
     document.querySelectorAll(".node-card").forEach(function (el) {
       el.onclick = function () {
@@ -403,7 +607,7 @@
 
   function refreshDash() {
     setLoading(true);
-    Promise.all([loadSummary(), loadNodes()])
+    Promise.all([loadSummary(), loadNodes(), loadArtifacts()])
       .then(function () {
         renderDashboard();
       })
@@ -668,7 +872,12 @@
         '<option value="">-- 选择制品 --</option>' +
         arts
           .map(function (x) {
-            return '<option value="' + esc(String(x.id)) + '">' + esc(x.display_name || "") + " (" + esc(x.version_label || x.sha256) + ")</option>";
+            var label =
+              (x.name || x.display_name || "") +
+              " " +
+              (x.version || x.version_label || "") +
+              (x.sha256 ? " · " + String(x.sha256).slice(0, 12) + "…" : "");
+            return '<option value="' + esc(String(x.id)) + '">' + esc(label.trim() || "artifact " + x.id) + "</option>";
           })
           .join("");
       const noArtsHint =
@@ -704,7 +913,7 @@
             '>升级 XrayR</button>' +
             '</div><p class="small">MANAGED_READONLY 节点仅可使用「查看状态」。安装/升级为高危操作，需二次确认且后端校验 allow_install / allow_upgrade。</p>'
           : '<span class="small">MANAGED_READONLY：仅允许查看状态</span>') +
-        '</div><table class="data"><thead><tr><th>command_id</th><th>类型</th><th>状态</th><th>进度/摘要</th><th>错误</th><th>创建</th></tr></thead><tbody>' +
+        '</div><table class="data"><thead><tr><th>command_id</th><th>类型</th><th>状态</th><th>进度</th><th>结果</th><th>错误</th><th>创建</th></tr></thead><tbody>' +
         state.commands
           .map(function (c) {
             var prog = "";
@@ -715,7 +924,9 @@
                 })
                 .join(" | ");
             }
+            if (!prog && c.log_summary) prog = c.log_summary;
             if (prog.length > 420) prog = prog.slice(0, 420) + "…";
+            var resStr = formatCmdResult(c.result_json || {});
             return (
               "<tr><td class=\"small\">" +
               esc(c.command_id) +
@@ -724,7 +935,11 @@
               "</td><td>" +
               esc(c.status) +
               "</td><td class=\"small\">" +
-              esc(c.log_summary || prog) +
+              esc(prog) +
+              "</td><td class=\"small\" title=\"" +
+              esc(resStr) +
+              "\">" +
+              esc(resStr) +
               "</td><td class=\"small\">" +
               esc(c.error_message || "") +
               "</td><td class=\"small\">" +

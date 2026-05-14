@@ -45,6 +45,10 @@ func runXrayrInstallUpgrade(client *capi.Client, cfg *agentcfg.File, commandID s
 		result(client, commandID, "FAILED", "", err, nil)
 		return
 	}
+	if err := validateLocalServiceName(cfg.XrayR.ServiceName); err != nil {
+		result(client, commandID, "FAILED", "", err, nil)
+		return
+	}
 	dlPath := strings.TrimSpace(strFrom(payload, "download_path"))
 	wantSHA := strings.ToLower(strings.TrimSpace(strFrom(payload, "sha256")))
 	binPath := cfg.EffectiveBinaryPath()
@@ -264,6 +268,24 @@ func validateInstallPayload(cfg *agentcfg.File, payload map[string]any) error {
 	}
 	if len(strings.TrimSpace(strFrom(payload, "sha256"))) != 64 {
 		return fmt.Errorf("sha256 无效")
+	}
+	return nil
+}
+
+func validateLocalServiceName(sn string) error {
+	s := strings.TrimSpace(sn)
+	if s == "" {
+		return nil
+	}
+	s = strings.TrimSuffix(s, ".service")
+	if len(s) == 0 || len(s) > 64 {
+		return fmt.Errorf("非法 service_name 长度")
+	}
+	for _, ch := range s {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' {
+			continue
+		}
+		return fmt.Errorf("service_name 含非法字符，仅允许字母数字与连字符、下划线")
 	}
 	return nil
 }

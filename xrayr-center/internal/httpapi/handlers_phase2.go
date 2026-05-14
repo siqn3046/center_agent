@@ -359,6 +359,15 @@ func (s *Server) postCmdInstallUpgrade(w http.ResponseWriter, r *http.Request, i
 		http.Error(w, "制品不存在或已禁用", http.StatusBadRequest)
 		return
 	}
+	if !strings.EqualFold(strings.TrimSpace(tos), "linux") {
+		http.Error(w, "仅支持 linux 制品", http.StatusBadRequest)
+		return
+	}
+	taLower := strings.ToLower(strings.TrimSpace(ta))
+	if taLower != "amd64" && taLower != "arm64" {
+		http.Error(w, "制品 arch 仅支持 amd64/arm64", http.StatusBadRequest)
+		return
+	}
 	var nos, narch, dbin, dcfg, dsvc *string
 	if err := s.pool.QueryRow(r.Context(), `SELECT agent_os, agent_arch, discovered_binary_path, discovered_config_path, discovered_service_name FROM node WHERE id=$1 AND disabled=false`, id).Scan(&nos, &narch, &dbin, &dcfg, &dsvc); err != nil {
 		http.Error(w, "节点不存在", http.StatusNotFound)
