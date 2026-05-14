@@ -323,6 +323,7 @@ func (d *DefaultDispatcher) shouldOverride(ctx context.Context, result SniffResu
 
 // Dispatch implements routing.Dispatcher.
 func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destination) (*transport.Link, error) {
+	mainCtx := ctx
 	if !destination.IsValid() {
 		panic("Dispatcher: Invalid destination.")
 	}
@@ -349,7 +350,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 		if sniffingRequest.Enabled && visionSniffReplayDisabled() {
 			errors.LogDebug(ctx, "vision_sniff_replay_skipped_by_switch", true)
 		}
-		go d.routedDispatch(ctx, outbound, destination)
+		go d.routedDispatch(mainCtx, outbound, destination)
 	} else {
 		go func() {
 			errors.LogDebug(ctx, "vision_sniff_start", "dispatch", true, "start_epoch_ms", time.Now().UnixMilli(), "routeOnly", sniffingRequest.RouteOnly, "metadataOnly", sniffingRequest.MetadataOnly, "overrideProtoCount", len(sniffingRequest.OverrideDestinationForProtocol))
@@ -358,14 +359,19 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 				logCtx: ctx,
 			}
 			outbound.Reader = cReader
-			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
+			sniffCtx, sniffCancel := context.WithTimeout(context.WithoutCancel(mainCtx), 30*time.Second)
+			defer sniffCancel()
+			result, err := sniffer(sniffCtx, cReader, sniffingRequest.MetadataOnly, destination.Network)
 			if err != nil {
-				errors.LogDebug(ctx, "vision_sniff_return_err", err)
-				if perrors.Is(err, context.Canceled) || perrors.Is(err, context.DeadlineExceeded) {
-					errors.LogDebug(ctx, "vision_sniff_ctx_dead_abort_routed_dispatch", err)
+				errors.LogDebug(mainCtx, "vision_sniff_return_err", err)
+				if mainCtx.Err() != nil && (perrors.Is(err, context.Canceled) || perrors.Is(err, context.DeadlineExceeded)) {
+					errors.LogDebug(mainCtx, "vision_sniff_ctx_dead_abort_routed_dispatch", err)
 					common.Close(outbound.Writer)
 					common.Interrupt(outbound.Reader)
 					return
+				}
+				if sniffCtx.Err() != nil && mainCtx.Err() == nil {
+					errors.LogDebug(mainCtx, "vision_sniff_child_ctx_done", sniffCtx.Err())
 				}
 			}
 			if err == nil {
@@ -393,7 +399,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 				errors.LogDebug(ctx, "vision_sniff_dest_override", false, "vision_sniff_route_only", sniffingRequest.RouteOnly)
 			}
 			errors.LogDebug(ctx, "vision_sniff_handler_reader_ready")
-			d.routedDispatch(ctx, outbound, destination)
+			d.routedDispatch(mainCtx, outbound, destination)
 		}()
 	}
 	return inbound, nil
@@ -401,6 +407,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 
 // DispatchLink implements routing.Dispatcher.
 func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.Destination, outbound *transport.Link) error {
+	mainCtx := ctx
 	if !destination.IsValid() {
 		return newError("Dispatcher: Invalid destination.")
 	}
@@ -423,56 +430,61 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		if sniffingRequest.Enabled && visionSniffReplayDisabled() {
 			errors.LogDebug(ctx, "vision_sniff_replay_skipped_by_switch", true)
 		}
-		go d.routedDispatch(ctx, outbound, destination)
+		// 必须与上游 xray-core app/dispatcher 一致：DispatchLink 内同步 routedDispatch。
+		// proxyman/inbound/worker 在 Process 返回后会 cancel(ctx)；若此处 go 异步，handler.Dispatch 拿到已取消的 ctx，freedom DNS/dial 会失败。
+		d.routedDispatch(mainCtx, outbound, destination)
 	} else {
-		go func() {
-			errors.LogDebug(ctx, "vision_sniff_start", "dispatchLink", true, "start_epoch_ms", time.Now().UnixMilli(), "routeOnly", sniffingRequest.RouteOnly, "metadataOnly", sniffingRequest.MetadataOnly, "overrideProtoCount", len(sniffingRequest.OverrideDestinationForProtocol))
-			tr, ok := outbound.Reader.(buf.TimeoutReader)
-			if !ok {
-				tr = ensureTimeoutReader(outbound.Reader)
+		errors.LogDebug(ctx, "vision_sniff_start", "dispatchLink", true, "start_epoch_ms", time.Now().UnixMilli(), "routeOnly", sniffingRequest.RouteOnly, "metadataOnly", sniffingRequest.MetadataOnly, "overrideProtoCount", len(sniffingRequest.OverrideDestinationForProtocol))
+		tr, ok := outbound.Reader.(buf.TimeoutReader)
+		if !ok {
+			tr = ensureTimeoutReader(outbound.Reader)
+		}
+		cReader := &cachedReader{
+			reader: tr,
+			logCtx: ctx,
+		}
+		outbound.Reader = cReader
+		sniffCtx, sniffCancel := context.WithTimeout(context.WithoutCancel(mainCtx), 30*time.Second)
+		defer sniffCancel()
+		result, err := sniffer(sniffCtx, cReader, sniffingRequest.MetadataOnly, destination.Network)
+		if err != nil {
+			errors.LogDebug(mainCtx, "vision_sniff_return_err", err)
+			if mainCtx.Err() != nil && (perrors.Is(err, context.Canceled) || perrors.Is(err, context.DeadlineExceeded)) {
+				errors.LogDebug(mainCtx, "vision_sniff_ctx_dead_abort_routed_dispatch", err)
+				common.Close(outbound.Writer)
+				common.Interrupt(outbound.Reader)
+				return nil
 			}
-			cReader := &cachedReader{
-				reader: tr,
-				logCtx: ctx,
+			if sniffCtx.Err() != nil && mainCtx.Err() == nil {
+				errors.LogDebug(mainCtx, "vision_sniff_child_ctx_done", sniffCtx.Err())
 			}
-			outbound.Reader = cReader
-			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
-			if err != nil {
-				errors.LogDebug(ctx, "vision_sniff_return_err", err)
-				if perrors.Is(err, context.Canceled) || perrors.Is(err, context.DeadlineExceeded) {
-					errors.LogDebug(ctx, "vision_sniff_ctx_dead_abort_routed_dispatch", err)
-					common.Close(outbound.Writer)
-					common.Interrupt(outbound.Reader)
-					return
-				}
+		}
+		if err == nil {
+			content.Protocol = result.Protocol()
+		}
+		if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
+			errors.LogDebug(ctx, "vision_sniff_dest_override", true, "vision_sniff_route_only", sniffingRequest.RouteOnly)
+			domain := result.Domain()
+			errors.LogInfo(ctx, "sniffed domain: ", domain)
+			destination.Address = net.ParseAddress(domain)
+			protocol := result.Protocol()
+			if resComp, ok := result.(SnifferResultComposite); ok {
+				protocol = resComp.ProtocolForDomainResult()
 			}
-			if err == nil {
-				content.Protocol = result.Protocol()
+			isFakeIP := false
+			if fkr0, ok := d.fdns.(dns.FakeDNSEngineRev0); ok && fkr0.IsIPInIPPool(ob.Target.Address) {
+				isFakeIP = true
 			}
-			if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
-				errors.LogDebug(ctx, "vision_sniff_dest_override", true, "vision_sniff_route_only", sniffingRequest.RouteOnly)
-				domain := result.Domain()
-				errors.LogInfo(ctx, "sniffed domain: ", domain)
-				destination.Address = net.ParseAddress(domain)
-				protocol := result.Protocol()
-				if resComp, ok := result.(SnifferResultComposite); ok {
-					protocol = resComp.ProtocolForDomainResult()
-				}
-				isFakeIP := false
-				if fkr0, ok := d.fdns.(dns.FakeDNSEngineRev0); ok && fkr0.IsIPInIPPool(ob.Target.Address) {
-					isFakeIP = true
-				}
-				if sniffingRequest.RouteOnly && protocol != "fakedns" && protocol != "fakedns+others" && !isFakeIP {
-					ob.RouteTarget = destination
-				} else {
-					ob.Target = destination
-				}
-			} else if err == nil {
-				errors.LogDebug(ctx, "vision_sniff_dest_override", false, "vision_sniff_route_only", sniffingRequest.RouteOnly)
+			if sniffingRequest.RouteOnly && protocol != "fakedns" && protocol != "fakedns+others" && !isFakeIP {
+				ob.RouteTarget = destination
+			} else {
+				ob.Target = destination
 			}
-			errors.LogDebug(ctx, "vision_sniff_handler_reader_ready")
-			d.routedDispatch(ctx, outbound, destination)
-		}()
+		} else if err == nil {
+			errors.LogDebug(ctx, "vision_sniff_dest_override", false, "vision_sniff_route_only", sniffingRequest.RouteOnly)
+		}
+		errors.LogDebug(ctx, "vision_sniff_handler_reader_ready")
+		d.routedDispatch(mainCtx, outbound, destination)
 	}
 
 	return nil
@@ -629,9 +641,9 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 	}
 
 	if err := ctx.Err(); err != nil {
-		errors.LogDebug(ctx, "vision_outbound_dispatch_ctx_done_before_handler", err)
+		errors.LogDebug(ctx, "vision_outbound_dispatch_main_ctx_done_before_handler", err)
 	} else {
-		errors.LogDebug(ctx, "vision_outbound_dispatch_ctx_ok_before_handler")
+		errors.LogDebug(ctx, "vision_outbound_dispatch_main_ctx_ok_before_handler")
 	}
 
 	handler.Dispatch(ctx, link)
