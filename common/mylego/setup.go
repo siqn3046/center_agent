@@ -1,6 +1,7 @@
 package mylego
 
 import (
+	"fmt"
 	"os"
 	"time"
 
@@ -61,29 +62,29 @@ func createNonExistingFolder(path string) error {
 	return nil
 }
 
-func setupChallenges(l *LegoCMD, client *lego.Client) {
+func setupChallenges(l *LegoCMD, client *lego.Client) error {
 	switch l.C.CertMode {
 	case "http":
-		err := client.Challenge.SetHTTP01Provider(http01.NewProviderServer("", ""))
-		if err != nil {
-			log.Panic(err)
+		if err := client.Challenge.SetHTTP01Provider(http01.NewProviderServer("", "")); err != nil {
+			return err
 		}
 	case "tls":
-		err := client.Challenge.SetTLSALPN01Provider(tlsalpn01.NewProviderServer("", ""))
-		if err != nil {
-			log.Panic(err)
+		if err := client.Challenge.SetTLSALPN01Provider(tlsalpn01.NewProviderServer("", "")); err != nil {
+			return err
 		}
 	case "dns":
-		setupDNS(l.C.Provider, client)
+		return setupDNS(l.C.Provider, client)
 	default:
-		log.Panic("No challenge selected. You must specify at least one challenge: `http`, `tls`, `dns`.")
+		return fmt.Errorf("no challenge selected; use http, tls, or dns (got %q)", l.C.CertMode)
 	}
+	return nil
 }
 
-func setupDNS(p string, client *lego.Client) {
+func setupDNS(p string, client *lego.Client) error {
 	provider, err := dns.NewDNSChallengeProviderByName(p)
 	if err != nil {
-		log.Panic(err)
+		log.Warnf("DNS-01 provider %q unavailable (optional ACME), skipping: %v", p, err)
+		return err
 	}
 
 	err = client.Challenge.SetDNS01Provider(
@@ -91,6 +92,7 @@ func setupDNS(p string, client *lego.Client) {
 		dns01.CondOption(true, dns01.AddDNSTimeout(10*time.Second)),
 	)
 	if err != nil {
-		log.Panic(err)
+		return err
 	}
+	return nil
 }

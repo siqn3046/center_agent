@@ -6,13 +6,15 @@ import (
 )
 
 type Config struct {
-	LogConfig          *LogConfig        `mapstructure:"Log"`
-	DnsConfigPath      string            `mapstructure:"DnsConfigPath"`
-	InboundConfigPath  string            `mapstructure:"InboundConfigPath"`
-	OutboundConfigPath string            `mapstructure:"OutboundConfigPath"`
-	RouteConfigPath    string            `mapstructure:"RouteConfigPath"`
-	ConnectionConfig   *ConnectionConfig `mapstructure:"ConnectionConfig"`
-	NodesConfig        []*NodesConfig    `mapstructure:"Nodes"`
+	// DisableVisionSniffReplay: true 时 mydispatcher 不做 Vision sniff/replay，用于对照「lookup canceled」类问题。
+	DisableVisionSniffReplay bool              `mapstructure:"DisableVisionSniffReplay"`
+	LogConfig                *LogConfig        `mapstructure:"Log"`
+	DnsConfigPath            string            `mapstructure:"DnsConfigPath"`
+	InboundConfigPath        string            `mapstructure:"InboundConfigPath"`
+	OutboundConfigPath       string            `mapstructure:"OutboundConfigPath"`
+	RouteConfigPath          string            `mapstructure:"RouteConfigPath"`
+	ConnectionConfig         *ConnectionConfig `mapstructure:"ConnectionConfig"`
+	NodesConfig              []*NodesConfig    `mapstructure:"Nodes"`
 }
 
 type NodesConfig struct {

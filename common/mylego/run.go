@@ -24,7 +24,9 @@ func (l *LegoCMD) Run() error {
 	accountsStorage := NewAccountsStorage(l)
 
 	account, client := setup(accountsStorage)
-	setupChallenges(l, client)
+	if err := setupChallenges(l, client); err != nil {
+		return fmt.Errorf("ACME challenge setup: %w", err)
+	}
 
 	if account.Registration == nil {
 		reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})

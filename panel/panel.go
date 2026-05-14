@@ -43,6 +43,8 @@ func New(panelConfig *Config) *Panel {
 }
 
 func (p *Panel) loadCore(panelConfig *Config) *core.Instance {
+	mydispatcher.SetDisableVisionSniffReplay(panelConfig.DisableVisionSniffReplay)
+
 	// Log Config
 	coreLogConfig := &conf.LogConfig{}
 	logConfig := getDefaultLogConfig()

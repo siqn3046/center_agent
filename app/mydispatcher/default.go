@@ -4,6 +4,7 @@ package mydispatcher
 
 import (
 	"context"
+	perrors "errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -288,10 +289,14 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network, sn
 
 func (d *DefaultDispatcher) shouldOverride(ctx context.Context, result SniffResult, request session.SniffingRequest, destination net.Destination) bool {
 	domain := result.Domain()
-	for _, d := range request.ExcludeForDomain {
-		if strings.ToLower(domain) == d {
-			return false
-		}
+	if domain == "" {
+		return false
+	}
+	if request.ExcludeForDomain != nil && request.ExcludeForDomain.MatchAny(strings.ToLower(domain)) {
+		return false
+	}
+	if request.ExcludeForIP != nil && destination.Address.Family().IsIP() && request.ExcludeForIP.Match(destination.Address.IP()) {
+		return false
 	}
 	protocolString := result.Protocol()
 	if resComp, ok := result.(SnifferResultComposite); ok {
@@ -302,7 +307,7 @@ func (d *DefaultDispatcher) shouldOverride(ctx context.Context, result SniffResu
 			return true
 		}
 		if fkr0, ok := d.fdns.(dns.FakeDNSEngineRev0); ok && protocolString != "bittorrent" && p == "fakedns" &&
-			destination.Address.Family().IsIP() && fkr0.IsIPInIPPool(destination.Address) {
+			fkr0.IsIPInIPPool(destination.Address) {
 			errors.LogInfo(ctx, "Using sniffer ", protocolString, " since the fake DNS missed")
 			return true
 		}
@@ -340,17 +345,29 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 	if err != nil {
 		return nil, err
 	}
-	if !sniffingRequest.Enabled {
+	if !sniffingRequest.Enabled || visionSniffReplayDisabled() {
+		if sniffingRequest.Enabled && visionSniffReplayDisabled() {
+			errors.LogDebug(ctx, "vision_sniff_replay_skipped_by_switch", true)
+		}
 		go d.routedDispatch(ctx, outbound, destination)
 	} else {
 		go func() {
-			errors.LogDebug(ctx, "vision_sniff_start", "dispatch", true, "routeOnly", sniffingRequest.RouteOnly, "metadataOnly", sniffingRequest.MetadataOnly, "overrideProtoCount", len(sniffingRequest.OverrideDestinationForProtocol))
+			errors.LogDebug(ctx, "vision_sniff_start", "dispatch", true, "start_epoch_ms", time.Now().UnixMilli(), "routeOnly", sniffingRequest.RouteOnly, "metadataOnly", sniffingRequest.MetadataOnly, "overrideProtoCount", len(sniffingRequest.OverrideDestinationForProtocol))
 			cReader := &cachedReader{
 				reader: ensureTimeoutReader(outbound.Reader),
 				logCtx: ctx,
 			}
 			outbound.Reader = cReader
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
+			if err != nil {
+				errors.LogDebug(ctx, "vision_sniff_return_err", err)
+				if perrors.Is(err, context.Canceled) || perrors.Is(err, context.DeadlineExceeded) {
+					errors.LogDebug(ctx, "vision_sniff_ctx_dead_abort_routed_dispatch", err)
+					common.Close(outbound.Writer)
+					common.Interrupt(outbound.Reader)
+					return
+				}
+			}
 			if err == nil {
 				content.Protocol = result.Protocol()
 			}
@@ -359,7 +376,15 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 				domain := result.Domain()
 				errors.LogInfo(ctx, "sniffed domain: ", domain)
 				destination.Address = net.ParseAddress(domain)
-				if sniffingRequest.RouteOnly && result.Protocol() != "fakedns" {
+				protocol := result.Protocol()
+				if resComp, ok := result.(SnifferResultComposite); ok {
+					protocol = resComp.ProtocolForDomainResult()
+				}
+				isFakeIP := false
+				if fkr0, ok := d.fdns.(dns.FakeDNSEngineRev0); ok && fkr0.IsIPInIPPool(ob.Target.Address) {
+					isFakeIP = true
+				}
+				if sniffingRequest.RouteOnly && protocol != "fakedns" && protocol != "fakedns+others" && !isFakeIP {
 					ob.RouteTarget = destination
 				} else {
 					ob.Target = destination
@@ -394,11 +419,14 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 	}
 	outbound = wrapDispatchLinkReader(ctx, d.policy, d.stats, outbound)
 	sniffingRequest := content.SniffingRequest
-	if !sniffingRequest.Enabled {
+	if !sniffingRequest.Enabled || visionSniffReplayDisabled() {
+		if sniffingRequest.Enabled && visionSniffReplayDisabled() {
+			errors.LogDebug(ctx, "vision_sniff_replay_skipped_by_switch", true)
+		}
 		go d.routedDispatch(ctx, outbound, destination)
 	} else {
 		go func() {
-			errors.LogDebug(ctx, "vision_sniff_start", "dispatchLink", true, "routeOnly", sniffingRequest.RouteOnly, "metadataOnly", sniffingRequest.MetadataOnly, "overrideProtoCount", len(sniffingRequest.OverrideDestinationForProtocol))
+			errors.LogDebug(ctx, "vision_sniff_start", "dispatchLink", true, "start_epoch_ms", time.Now().UnixMilli(), "routeOnly", sniffingRequest.RouteOnly, "metadataOnly", sniffingRequest.MetadataOnly, "overrideProtoCount", len(sniffingRequest.OverrideDestinationForProtocol))
 			tr, ok := outbound.Reader.(buf.TimeoutReader)
 			if !ok {
 				tr = ensureTimeoutReader(outbound.Reader)
@@ -409,6 +437,15 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 			}
 			outbound.Reader = cReader
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
+			if err != nil {
+				errors.LogDebug(ctx, "vision_sniff_return_err", err)
+				if perrors.Is(err, context.Canceled) || perrors.Is(err, context.DeadlineExceeded) {
+					errors.LogDebug(ctx, "vision_sniff_ctx_dead_abort_routed_dispatch", err)
+					common.Close(outbound.Writer)
+					common.Interrupt(outbound.Reader)
+					return
+				}
+			}
 			if err == nil {
 				content.Protocol = result.Protocol()
 			}
@@ -417,7 +454,15 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 				domain := result.Domain()
 				errors.LogInfo(ctx, "sniffed domain: ", domain)
 				destination.Address = net.ParseAddress(domain)
-				if sniffingRequest.RouteOnly && result.Protocol() != "fakedns" {
+				protocol := result.Protocol()
+				if resComp, ok := result.(SnifferResultComposite); ok {
+					protocol = resComp.ProtocolForDomainResult()
+				}
+				isFakeIP := false
+				if fkr0, ok := d.fdns.(dns.FakeDNSEngineRev0); ok && fkr0.IsIPInIPPool(ob.Target.Address) {
+					isFakeIP = true
+				}
+				if sniffingRequest.RouteOnly && protocol != "fakedns" && protocol != "fakedns+others" && !isFakeIP {
 					ob.RouteTarget = destination
 				} else {
 					ob.Target = destination
@@ -440,6 +485,9 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 	sniffer := NewSniffer(ctx)
 
 	metaresult, metadataErr := sniffer.SniffMetadata(ctx)
+	if metadataErr != nil {
+		errors.LogDebug(ctx, "vision_sniff_metadata_err", metadataErr)
+	}
 
 	if metadataOnly {
 		return metaresult, metadataErr
@@ -480,7 +528,14 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 		}
 	}()
 	if contentErr != nil && metadataErr == nil {
+		if perrors.Is(contentErr, context.Canceled) || perrors.Is(contentErr, context.DeadlineExceeded) {
+			errors.LogDebug(ctx, "vision_sniff_ctx_err_not_swallowed", contentErr)
+			return metaresult, contentErr
+		}
 		return metaresult, nil
+	}
+	if contentErr != nil {
+		errors.LogDebug(ctx, "vision_sniff_content_err_final", contentErr)
 	}
 	if contentErr == nil && metadataErr == nil {
 		if contentResult != nil {
@@ -571,6 +626,12 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 			}
 		}
 		log.Record(accessMessage)
+	}
+
+	if err := ctx.Err(); err != nil {
+		errors.LogDebug(ctx, "vision_outbound_dispatch_ctx_done_before_handler", err)
+	} else {
+		errors.LogDebug(ctx, "vision_outbound_dispatch_ctx_ok_before_handler")
 	}
 
 	handler.Dispatch(ctx, link)
