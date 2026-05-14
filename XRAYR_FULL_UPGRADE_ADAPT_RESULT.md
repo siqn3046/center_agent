@@ -18,6 +18,7 @@
 
 | 项目 | 新值 |
 |------|------|
+| XrayR 主程序（`version` 命令） | **0.9.8**（`cmd/version.go`；升级分支上已由 **0.9.4** 调整） |
 | Go | **1.26.1**（`go.mod`） |
 | xray-core（Go 模块版本） | **v1.260327.0**（与 GitHub Release **v26.3.27** 对应；官方在 proxy 上使用 `v1.260327.0` 语义化标签，**勿**使用无 `+incompatible` 的裸 `v26.3.27` require） |
 | 根 `Dockerfile` | `golang:1.26.1-alpine` |
@@ -32,6 +33,7 @@
 
 | 模块 | 文件 |
 |------|------|
+| 版本号 | `cmd/version.go`（`0.9.4` → `0.9.8`） |
 | 依赖 | `go.mod`、`go.sum` |
 | 发行说明 | `README.md`（仅 Go 版本提示） |
 | 安装脚本 | `install.sh`（Go 版本校验与提示；**未改** `REPO`） |
@@ -135,6 +137,7 @@ git commit -m "chore: upgrade xray-core and adapt root module"
 
 ## 12. 本轮说明
 
+- 升级分支显示版本号已从 **0.9.4** 调整为 **0.9.8**；**xray-core** 仍为 **v1.260327.0**，**Go** 仍为 **1.26.1**。
 - 已按上游 **`main/distro/all`** 更新空导入，并保留 **XrayR 自定义 `mydispatcher`**。  
 - **Center / Agent 子模块**未做逻辑升级，仅验证可编译。  
 - 完整 `go test ./...` 受环境依赖限制；**生产门禁**建议 CI 中分 job：`vet` + 核心包单测 + 可选集成。
