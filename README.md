@@ -69,9 +69,25 @@ A Xray backend framework that can easily support many panels.
 
 ### 一键安装
 
+原 **XrayR-project/XrayR-release** 一键脚本已不可用，请改用 **本仓库** 根目录的 [`install.sh`](install.sh)（从源码编译节点主程序，需已安装 **Git** 与 **Go 1.21+**）。
+
+在 **Linux** 上执行（安装到 `/usr/local/bin/XrayR` 需 **root**；管道安装请用 `sudo bash`）。将 `main` 换成你仓库的默认分支名（如 `master`）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/siqn3046/center_agent/main/install.sh | sudo bash
 ```
-wget -N https://raw.githubusercontent.com/XrayR-project/XrayR-release/master/install.sh && bash install.sh
+
+```bash
+wget -qO- https://raw.githubusercontent.com/siqn3046/center_agent/main/install.sh | sudo bash
 ```
+
+若希望先保存脚本再运行（便于检查内容）：
+
+```bash
+wget -q https://raw.githubusercontent.com/siqn3046/center_agent/main/install.sh -O install.sh && sudo bash install.sh
+```
+
+自托管或 fork 时，把上述 URL 中的 `siqn3046/center_agent` 与分支名改成你的仓库即可；也可用环境变量覆盖克隆地址与分支，例如：`XRAYR_INSTALL_REPO=https://github.com/you/your-fork.git` `XRAYR_INSTALL_BRANCH=main`。
 
 ### 使用Docker部署软件
 
