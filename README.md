@@ -97,9 +97,23 @@ wget -q https://raw.githubusercontent.com/siqn3046/center_agent/main/install.sh 
 
 [手动安装教程](https://xrayr-project.github.io/XrayR-doc/xrayr-xia-zai-he-an-zhuang/install/manual)
 
-### Center 与 Agent 集中管控部署
+### Center 一键安装（推荐）
 
-本仓库提供 **xrayr-center**（管理端 + API）与 **xrayr-agent**（节点代理）。以下为 **全新 Linux 服务器** 上使用 Docker Compose 从 0 部署 Center 的推荐流程；更细的说明见 [`xrayr-center/README.md`](xrayr-center/README.md) 与 [`XRAYR_CENTER_PHASE6_DOCKER_INSTALL_DOC_RESULT.md`](XRAYR_CENTER_PHASE6_DOCKER_INSTALL_DOC_RESULT.md)。
+在一台新的 **Ubuntu / Debian** 服务器上（需 **root**），一条命令完成：安装 Docker 与依赖、克隆仓库、**交互生成 `.env`**（自动生成数据库密码与 JWT）、启动 Center：
+
+```bash
+wget -q https://raw.githubusercontent.com/siqn3046/center_agent/main/xrayr-center/install-center.sh -O install-center.sh && sudo bash install-center.sh
+```
+
+非交互示例（CI / 云初始化脚本）见 [`xrayr-center/README.md`](xrayr-center/README.md) 中「一键安装向导」。
+
+安装完成后在浏览器打开你填写的 **Center 对外地址**（如 `http://你的服务器IP:8080`），登录后台创建节点，再复制页面上的 **Agent 一键安装命令** 到节点 VPS 执行。结论文档：[`XRAYR_CENTER_PHASE7_ONECLICK_INSTALLER_RESULT.md`](XRAYR_CENTER_PHASE7_ONECLICK_INSTALLER_RESULT.md)。
+
+---
+
+### Center 与 Agent 集中管控部署（手动方式）
+
+本仓库提供 **xrayr-center**（管理端 + API）与 **xrayr-agent**（节点代理）。若不想使用一键脚本，可按以下步骤手动完成 Docker Compose 部署；更细的说明见 [`xrayr-center/README.md`](xrayr-center/README.md) 与 [`XRAYR_CENTER_PHASE6_DOCKER_INSTALL_DOC_RESULT.md`](XRAYR_CENTER_PHASE6_DOCKER_INSTALL_DOC_RESULT.md)。
 
 #### 1. 准备服务器
 

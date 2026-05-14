@@ -11,6 +11,43 @@
 
 推荐使用本目录下的 **Docker Compose** 一键拉起 `postgres` 与 `xrayr-center`，数据与制品使用命名卷持久化。
 
+### 一键安装向导（推荐）
+
+在 **Ubuntu / Debian** 上以 **root** 执行（自动安装 Docker、克隆仓库、交互填写对外地址与 Agent 下载信息、生成 `.env` 并启动）：
+
+```bash
+wget -q https://raw.githubusercontent.com/siqn3046/center_agent/main/xrayr-center/install-center.sh -O install-center.sh && sudo bash install-center.sh
+```
+
+**非交互**（须提供全部必填项）：
+
+```bash
+sudo bash install-center.sh \
+  --public-url http://1.2.3.4:8080 \
+  --port 8080 \
+  --agent-url https://example.com/xrayr-agent-linux-amd64 \
+  --agent-sha256 64位小写或十六进制sha256 \
+  --yes
+```
+
+**说明**
+
+- 默认安装根目录：`/opt/xrayr-center`，Center Compose 目录：`/opt/xrayr-center/xrayr-center`。  
+- 生成的 **`.env`** 位于 **`/opt/xrayr-center/xrayr-center/.env`**（内含自动生成的数据库密码与 JWT，请妥善备份，勿提交到公开仓库）。  
+- **`CENTER_AGENT_DOWNLOAD_URL`** 与 **`CENTER_AGENT_SHA256`** 必须正确，否则节点执行 **`/install-agent.sh`** 一键安装会失败。  
+
+**安装后常用命令**
+
+```bash
+cd /opt/xrayr-center/xrayr-center
+docker compose ps
+docker compose logs -f xrayr-center
+docker compose restart xrayr-center
+docker compose down
+```
+
+更多参数见脚本 **`install-center.sh --help`**。结论文档：[`XRAYR_CENTER_PHASE7_ONECLICK_INSTALLER_RESULT.md`](../XRAYR_CENTER_PHASE7_ONECLICK_INSTALLER_RESULT.md)。
+
 ## 三、服务器准备
 
 **推荐系统**
