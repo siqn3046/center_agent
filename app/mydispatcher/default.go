@@ -32,9 +32,19 @@ import (
 
 var errSniffingTimeout = newError("timeout on sniffing")
 
+// ensureTimeoutReader returns r when it already supports timed reads (e.g. *pipe.Reader).
+// Otherwise wraps r with buf.TimeoutWrapperReader so sniffing can use ReadMultiBufferTimeout
+// without assuming *pipe.Reader (e.g. VLESS flow xtls-rprx-vision uses *proxy.VisionReader).
+func ensureTimeoutReader(r buf.Reader) buf.TimeoutReader {
+	if tr, ok := r.(buf.TimeoutReader); ok {
+		return tr
+	}
+	return &buf.TimeoutWrapperReader{Reader: r}
+}
+
 type cachedReader struct {
 	sync.Mutex
-	reader *pipe.Reader
+	reader buf.TimeoutReader
 	cache  buf.MultiBuffer
 }
 
@@ -88,7 +98,9 @@ func (r *cachedReader) Interrupt() {
 		r.cache = buf.ReleaseMulti(r.cache)
 	}
 	r.Unlock()
-	r.reader.Interrupt()
+	if p, ok := r.reader.(*pipe.Reader); ok {
+		p.Interrupt()
+	}
 }
 
 // DefaultDispatcher is a default implementation of Dispatcher.
@@ -265,7 +277,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 	} else {
 		go func() {
 			cReader := &cachedReader{
-				reader: outbound.Reader.(*pipe.Reader),
+				reader: ensureTimeoutReader(outbound.Reader),
 			}
 			outbound.Reader = cReader
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
@@ -312,7 +324,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 	} else {
 		go func() {
 			cReader := &cachedReader{
-				reader: outbound.Reader.(*pipe.Reader),
+				reader: ensureTimeoutReader(outbound.Reader),
 			}
 			outbound.Reader = cReader
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
