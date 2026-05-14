@@ -33,25 +33,31 @@ import (
 var errSniffingTimeout = newError("timeout on sniffing")
 
 // ensureTimeoutReader returns r when it already supports timed reads (e.g. *pipe.Reader).
-// Otherwise wraps r with buf.TimeoutWrapperReader so sniffing can use ReadMultiBufferTimeout
-// without assuming *pipe.Reader (e.g. VLESS flow xtls-rprx-vision uses *proxy.VisionReader).
+// Otherwise wraps r with queuedTimeoutBufReader so timed sniff reads never drop bytes that
+// complete after the deadline (buf.TimeoutWrapperReader can race with VisionReader).
 func ensureTimeoutReader(r buf.Reader) buf.TimeoutReader {
 	if tr, ok := r.(buf.TimeoutReader); ok {
 		return tr
 	}
-	return &buf.TimeoutWrapperReader{Reader: r}
+	return &queuedTimeoutBufReader{inner: r}
 }
 
-// wrapDispatchLinkReader mirrors upstream dispatcher.WrapLink: wrap Reader with TimeoutWrapperReader,
-// attach uplink/downlink counters and online map. Ensures sniff path sees buf.TimeoutReader like core.
+// wrapDispatchLinkReader mirrors upstream dispatcher.WrapLink: wrap Reader for policy/stats,
+// using queuedTimeoutBufReader so DispatchLink sniff + TLS replay stays lossless with Vision.
 func wrapDispatchLinkReader(ctx context.Context, pm policy.Manager, sm stats.Manager, link *transport.Link) *transport.Link {
 	if link == nil {
 		return nil
 	}
-	if _, ok := link.Reader.(*buf.TimeoutWrapperReader); !ok {
-		link.Reader = &buf.TimeoutWrapperReader{Reader: link.Reader}
+	inner := link.Reader
+	if tw, ok := inner.(*buf.TimeoutWrapperReader); ok {
+		inner = tw.Reader
 	}
-	tw := link.Reader.(*buf.TimeoutWrapperReader)
+	if _, ok := inner.(*queuedTimeoutBufReader); !ok {
+		link.Reader = &queuedTimeoutBufReader{inner: inner}
+	} else {
+		link.Reader = inner
+	}
+	qr := link.Reader.(*queuedTimeoutBufReader)
 	sessionInbound := session.InboundFromContext(ctx)
 	var user *protocol.MemoryUser
 	if sessionInbound != nil {
@@ -62,7 +68,7 @@ func wrapDispatchLinkReader(ctx context.Context, pm policy.Manager, sm stats.Man
 		if p.Stats.UserUplink {
 			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
 			if c, _ := stats.GetOrRegisterCounter(sm, name); c != nil {
-				tw.Counter = c
+				qr.Counter = c
 			}
 		}
 		if p.Stats.UserDownlink {
@@ -90,16 +96,23 @@ type cachedReader struct {
 	sync.Mutex
 	reader buf.TimeoutReader
 	cache  buf.MultiBuffer
+	logCtx context.Context
 }
 
 func (r *cachedReader) Cache(b *buf.Buffer, deadline time.Duration) error {
 	mb, err := r.reader.ReadMultiBufferTimeout(deadline)
 	if err != nil {
+		if r.logCtx != nil {
+			errors.LogDebug(r.logCtx, "vision_sniff_error_but_replay_continue", err)
+		}
 		return err
 	}
 	r.Lock()
 	if !mb.IsEmpty() {
 		r.cache, _ = buf.MergeMulti(r.cache, mb)
+		if r.logCtx != nil {
+			errors.LogDebug(r.logCtx, "vision_sniff_bytes_read", mb.Len())
+		}
 	}
 	b.Clear()
 	rawBytes := b.Extend(min(r.cache.Len(), b.Cap()))
@@ -116,6 +129,9 @@ func (r *cachedReader) readInternal() buf.MultiBuffer {
 	if r.cache != nil && !r.cache.IsEmpty() {
 		mb := r.cache
 		r.cache = nil
+		if r.logCtx != nil {
+			errors.LogDebug(r.logCtx, "vision_sniff_replay_bytes", mb.Len())
+		}
 		return mb
 	}
 
@@ -148,6 +164,10 @@ func (r *cachedReader) Interrupt() {
 	r.Unlock()
 	if p, ok := r.reader.(*pipe.Reader); ok {
 		p.Interrupt()
+		return
+	}
+	if q, ok := r.reader.(*queuedTimeoutBufReader); ok {
+		q.Interrupt()
 	}
 }
 
@@ -324,8 +344,10 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 		go d.routedDispatch(ctx, outbound, destination)
 	} else {
 		go func() {
+			errors.LogDebug(ctx, "vision_sniff_start", "dispatch", true, "routeOnly", sniffingRequest.RouteOnly, "metadataOnly", sniffingRequest.MetadataOnly, "overrideProtoCount", len(sniffingRequest.OverrideDestinationForProtocol))
 			cReader := &cachedReader{
 				reader: ensureTimeoutReader(outbound.Reader),
+				logCtx: ctx,
 			}
 			outbound.Reader = cReader
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
@@ -333,6 +355,7 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 				content.Protocol = result.Protocol()
 			}
 			if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
+				errors.LogDebug(ctx, "vision_sniff_dest_override", true, "vision_sniff_route_only", sniffingRequest.RouteOnly)
 				domain := result.Domain()
 				errors.LogInfo(ctx, "sniffed domain: ", domain)
 				destination.Address = net.ParseAddress(domain)
@@ -341,7 +364,10 @@ func (d *DefaultDispatcher) Dispatch(ctx context.Context, destination net.Destin
 				} else {
 					ob.Target = destination
 				}
+			} else if err == nil {
+				errors.LogDebug(ctx, "vision_sniff_dest_override", false, "vision_sniff_route_only", sniffingRequest.RouteOnly)
 			}
+			errors.LogDebug(ctx, "vision_sniff_handler_reader_ready")
 			d.routedDispatch(ctx, outbound, destination)
 		}()
 	}
@@ -372,12 +398,14 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 		go d.routedDispatch(ctx, outbound, destination)
 	} else {
 		go func() {
+			errors.LogDebug(ctx, "vision_sniff_start", "dispatchLink", true, "routeOnly", sniffingRequest.RouteOnly, "metadataOnly", sniffingRequest.MetadataOnly, "overrideProtoCount", len(sniffingRequest.OverrideDestinationForProtocol))
 			tr, ok := outbound.Reader.(buf.TimeoutReader)
 			if !ok {
 				tr = ensureTimeoutReader(outbound.Reader)
 			}
 			cReader := &cachedReader{
 				reader: tr,
+				logCtx: ctx,
 			}
 			outbound.Reader = cReader
 			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
@@ -385,6 +413,7 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 				content.Protocol = result.Protocol()
 			}
 			if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
+				errors.LogDebug(ctx, "vision_sniff_dest_override", true, "vision_sniff_route_only", sniffingRequest.RouteOnly)
 				domain := result.Domain()
 				errors.LogInfo(ctx, "sniffed domain: ", domain)
 				destination.Address = net.ParseAddress(domain)
@@ -393,7 +422,10 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 				} else {
 					ob.Target = destination
 				}
+			} else if err == nil {
+				errors.LogDebug(ctx, "vision_sniff_dest_override", false, "vision_sniff_route_only", sniffingRequest.RouteOnly)
 			}
+			errors.LogDebug(ctx, "vision_sniff_handler_reader_ready")
 			d.routedDispatch(ctx, outbound, destination)
 		}()
 	}
@@ -451,6 +483,9 @@ func sniffer(ctx context.Context, cReader *cachedReader, metadataOnly bool, netw
 		return metaresult, nil
 	}
 	if contentErr == nil && metadataErr == nil {
+		if contentResult != nil {
+			errors.LogDebug(ctx, "vision_sniff_result", contentResult.Protocol())
+		}
 		return CompositeResult(metaresult, contentResult), nil
 	}
 	return contentResult, contentErr

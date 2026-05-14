@@ -46,6 +46,9 @@ func InboundBuilder(config *Config, nodeInfo *api.NodeInfo, tag string) (*core.I
 	if config.DisableSniffing {
 		sniffingConfig.Enabled = false
 	}
+	if (nodeInfo.EnableVless || nodeInfo.NodeType == "Vless") && strings.Contains(strings.ToLower(nodeInfo.VlessFlow), "vision") {
+		sniffingConfig.RouteOnly = true
+	}
 	inboundDetourConfig.SniffingConfig = sniffingConfig
 
 	var (
