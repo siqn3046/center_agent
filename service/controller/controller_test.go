@@ -1,43 +1,57 @@
 package controller_test
 
 import (
-	"fmt"
-	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 	"testing"
 
+	"github.com/xtls/xray-core/app/proxyman"
+	"github.com/xtls/xray-core/app/stats"
+	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
 	"github.com/xtls/xray-core/infra/conf"
 
 	"github.com/XrayR-project/XrayR/api"
 	"github.com/XrayR-project/XrayR/api/sspanel"
+	"github.com/XrayR-project/XrayR/app/mydispatcher"
 	_ "github.com/XrayR-project/XrayR/cmd/distro/all"
 	"github.com/XrayR-project/XrayR/common/mylego"
 	. "github.com/XrayR-project/XrayR/service/controller"
 )
 
 func TestController(t *testing.T) {
-	serverConfig := &conf.Config{
-		Stats:     &conf.StatsConfig{},
-		LogConfig: &conf.LogConfig{LogLevel: "debug"},
-	}
-	policyConfig := &conf.PolicyConfig{}
-	policyConfig.Levels = map[uint32]*conf.Policy{0: {
+	coreLogConfig := &conf.LogConfig{LogLevel: "debug"}
+	corePolicyConfig := &conf.PolicyConfig{}
+	corePolicyConfig.Levels = map[uint32]*conf.Policy{0: {
 		StatsUserUplink:   true,
 		StatsUserDownlink: true,
 	}}
-	serverConfig.Policy = policyConfig
-	config, _ := serverConfig.Build()
+	policyConfig, err := corePolicyConfig.Build()
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	coreDnsConfig := &conf.DNSConfig{}
+	dnsConfig, err := coreDnsConfig.Build()
+	if err != nil {
+		t.Fatalf("dns: %v", err)
+	}
+	coreRouterConfig := &conf.RouterConfig{}
+	routeConfig, err := coreRouterConfig.Build()
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
 
-	// config := &core.Config{
-	// 	App: []*serial.TypedMessage{
-	// 		serial.ToTypedMessage(&dispatcher.Config{}),
-	// 		serial.ToTypedMessage(&proxyman.InboundConfig{}),
-	// 		serial.ToTypedMessage(&proxyman.OutboundConfig{}),
-	// 		serial.ToTypedMessage(&stats.Config{}),
-	// 	}}
+	config := &core.Config{
+		App: []*serial.TypedMessage{
+			serial.ToTypedMessage(coreLogConfig.Build()),
+			serial.ToTypedMessage(&mydispatcher.Config{}),
+			serial.ToTypedMessage(&stats.Config{}),
+			serial.ToTypedMessage(&proxyman.InboundConfig{}),
+			serial.ToTypedMessage(&proxyman.OutboundConfig{}),
+			serial.ToTypedMessage(policyConfig),
+			serial.ToTypedMessage(dnsConfig),
+			serial.ToTypedMessage(routeConfig),
+		},
+	}
 
 	server, err := core.New(config)
 	defer server.Close()
@@ -65,17 +79,10 @@ func TestController(t *testing.T) {
 	}
 	apiClient := sspanel.New(apiConfig)
 	c := New(server, apiClient, controlerConfig, "SSpanel")
-	fmt.Println("Sleep 1s")
 	err = c.Start()
 	if err != nil {
-		t.Error(err)
+		t.Logf("Start without live panel (expected): %v", err)
 	}
 	// Explicitly triggering GC to remove garbage from config loading.
 	runtime.GC()
-
-	{
-		osSignals := make(chan os.Signal, 1)
-		signal.Notify(osSignals, os.Interrupt, os.Kill, syscall.SIGTERM)
-		<-osSignals
-	}
 }

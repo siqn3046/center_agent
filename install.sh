@@ -30,7 +30,7 @@ if ! command -v git >/dev/null 2>&1; then
   exit 1
 fi
 if ! command -v go >/dev/null 2>&1; then
-  echo "error: Go toolchain is required (see repository go.mod; suggest Go 1.22+). Install Go, then re-run this script." >&2
+  echo "error: Go toolchain is required (see repository go.mod; suggest Go 1.26+). Install Go, then re-run this script." >&2
   exit 1
 fi
 
@@ -40,9 +40,9 @@ if [[ "${have}" == unknown ]]; then
   exit 1
 fi
 if [[ "${have}" != devel* ]]; then
-  need="go1.21"
+  need="go1.26"
   if [[ "$(printf '%s\n%s' "${need}" "${have}" | sort -V | head -n1)" != "${need}" ]]; then
-    echo "error: need Go >= 1.21, got ${have}" >&2
+    echo "error: need Go >= 1.26, got ${have}" >&2
     exit 1
   fi
 fi

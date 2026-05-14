@@ -69,7 +69,7 @@ A Xray backend framework that can easily support many panels.
 
 ### 一键安装
 
-原 **XrayR-project/XrayR-release** 一键脚本已不可用，请改用 **本仓库** 根目录的 [`install.sh`](install.sh)（从源码编译节点主程序，需已安装 **Git** 与 **Go 1.21+**）。
+原 **XrayR-project/XrayR-release** 一键脚本已不可用，请改用 **本仓库** 根目录的 [`install.sh`](install.sh)（从源码编译节点主程序，需已安装 **Git** 与 **Go 1.26+**，与根目录 `go.mod` 一致）。
 
 在 **Linux** 上执行（安装到 `/usr/local/bin/XrayR` 需 **root**；管道安装请用 `sudo bash`）。将 `main` 换成你仓库的默认分支名（如 `master`）：
 

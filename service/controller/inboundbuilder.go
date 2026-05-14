@@ -119,10 +119,6 @@ func InboundBuilder(config *Config, nodeInfo *api.NodeInfo, tag string) (*core.I
 		}
 
 		proxySetting.NetworkList = &conf.NetworkList{"tcp", "udp"}
-		proxySetting.IVCheck = true
-		if config.DisableIVCheck {
-			proxySetting.IVCheck = false
-		}
 
 	case "dokodemo-door":
 		protocol = "dokodemo-door"
@@ -146,7 +142,12 @@ func InboundBuilder(config *Config, nodeInfo *api.NodeInfo, tag string) (*core.I
 
 	// Build streamSettings
 	streamSetting = new(conf.StreamConfig)
-	transportProtocol := conf.TransportProtocol(nodeInfo.TransportProtocol)
+	tp := strings.ToLower(nodeInfo.TransportProtocol)
+	// Upstream removed plain "http" / "quic" transports; map to splithttp (XHTTP) for compatibility.
+	if tp == "http" || tp == "h2" || tp == "h3" || tp == "quic" {
+		tp = "splithttp"
+	}
+	transportProtocol := conf.TransportProtocol(tp)
 	networkType, err := transportProtocol.Build()
 	if err != nil {
 		return nil, fmt.Errorf("convert TransportProtocol failed: %s", err)
@@ -169,28 +170,12 @@ func InboundBuilder(config *Config, nodeInfo *api.NodeInfo, tag string) (*core.I
 			Headers:             headers,
 		}
 		streamSetting.WSSettings = wsSettings
-	case "http":
-		hosts := conf.StringList{nodeInfo.Host}
-		httpSettings := &conf.HTTPConfig{
-			Host:    &hosts,
-			Path:    nodeInfo.Path,
-			Method:  nodeInfo.Method,
-			Headers: nodeInfo.HttpHeaders,
-		}
-		streamSetting.HTTPSettings = httpSettings
 	case "grpc":
 		grpcSettings := &conf.GRPCConfig{
 			ServiceName: nodeInfo.ServiceName,
 			Authority:   nodeInfo.Authority,
 		}
-		streamSetting.GRPCConfig = grpcSettings
-	case "quic":
-		quicSettings := &conf.QUICConfig{
-			Header:   nodeInfo.Header,
-			Security: nodeInfo.Security,
-			Key:      nodeInfo.Key,
-		}
-		streamSetting.QUICSettings = quicSettings
+		streamSetting.GRPCSettings = grpcSettings
 	case "httpupgrade":
 		httpupgradeSettings := &conf.HttpUpgradeConfig{
 			Headers:             nodeInfo.Headers,
@@ -203,6 +188,27 @@ func InboundBuilder(config *Config, nodeInfo *api.NodeInfo, tag string) (*core.I
 		splithttpSetting := &conf.SplitHTTPConfig{
 			Path: nodeInfo.Path,
 			Host: nodeInfo.Host,
+		}
+		if strings.ToLower(nodeInfo.TransportProtocol) == "http" ||
+			strings.ToLower(nodeInfo.TransportProtocol) == "h2" ||
+			strings.ToLower(nodeInfo.TransportProtocol) == "h3" {
+			if nodeInfo.Method != "" {
+				splithttpSetting.UplinkHTTPMethod = nodeInfo.Method
+			}
+			if nodeInfo.HttpHeaders != nil {
+				h := make(map[string]string)
+				for k, sl := range nodeInfo.HttpHeaders {
+					if sl != nil && len(*sl) > 0 {
+						h[k] = (*sl)[0]
+					}
+				}
+				if len(h) > 0 {
+					splithttpSetting.Headers = h
+				}
+			}
+		}
+		if strings.ToLower(nodeInfo.TransportProtocol) == "quic" {
+			splithttpSetting.Mode = "stream-one"
 		}
 		streamSetting.SplitHTTPSettings = splithttpSetting
 	}
