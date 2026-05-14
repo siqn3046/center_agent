@@ -1,32 +1,44 @@
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: xrayr-center-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: center
-      POSTGRES_PASSWORD: center
-      POSTGRES_DB: center
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-xrayr_center}
+      POSTGRES_USER: ${POSTGRES_USER:-xrayr}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xrayr_center_change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U center -d center"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  center:
+  xrayr-center:
     build:
       context: .
       dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      DATABASE_URL: postgres://center:center@postgres:5432/center?sslmode=disable
-      CENTER_JWT_SECRET: dev-change-me-change-me-32chars!!
-      CENTER_PUBLIC_BASE_URL: http://localhost:8080
-      CENTER_LISTEN: ":8080"
-      # 以下为 Agent 安装脚本校验用：请放置已构建的 xrayr-agent 二进制下载地址与 sha256
-      CENTER_AGENT_DOWNLOAD_URL: ""
-      CENTER_AGENT_SHA256: ""
+    container_name: xrayr-center
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+    ports:
+      - "${CENTER_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-xrayr}:${POSTGRES_PASSWORD:-xrayr_center_change_me}@postgres:5432/${POSTGRES_DB:-xrayr_center}?sslmode=disable
+      CENTER_LISTEN: ":8080"
+      CENTER_PUBLIC_BASE_URL: ${CENTER_PUBLIC_BASE_URL:-http://localhost:8080}
+      CENTER_JWT_SECRET: ${CENTER_JWT_SECRET:-please-change-this-secret-min-32chars!!}
+      CENTER_ARTIFACT_DIR: /data/artifacts
+      CENTER_AGENT_VERSION: ${CENTER_AGENT_VERSION:-}
+      CENTER_AGENT_BINARY_NAME: ${CENTER_AGENT_BINARY_NAME:-xrayr-agent}
+      CENTER_AGENT_DOWNLOAD_URL: ${CENTER_AGENT_DOWNLOAD_URL:-}
+      CENTER_AGENT_SHA256: ${CENTER_AGENT_SHA256:-}
+    volumes:
+      - center_artifacts:/data/artifacts
+
+volumes:
+  postgres_data:
+  center_artifacts:

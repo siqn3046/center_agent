@@ -56,7 +56,8 @@ func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
 	if ich != nil && *ich != "" {
 		_ = s.pool.QueryRow(r.Context(), `SELECT cv.id FROM config_version cv WHERE cv.content_sha256 = $1 AND cv.imported_from_node_id = $2 ORDER BY cv.id DESC LIMIT 1`, *ich, id).Scan(&ichid)
 	}
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	wget, curl := s.agentInstallCommandsForRequest(r, installTokenPlaceholder)
+	out := map[string]any{
 		"id": nid, "node_code": code, "node_name": name, "node_group_id": ngid, "region": region, "remark": remark,
 		"install_state": inst, "manage_status": ms,
 		"imported_config_hash": ich, "imported_config_version_id": ichid, "imported_backup_path": ibp,
@@ -65,7 +66,10 @@ func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
 		"agent_os": aos, "agent_arch": aarch, "virtualization": virt, "public_ip": pip,
 		"discovered_binary_path": dbin, "discovered_config_path": dcfg, "discovered_service_name": dsvc,
 		"pending_deploy_version_id": pending,
-	})
+		"install_command_wget": wget, "install_command_curl": curl,
+		"install_command_hint": "命令中的 <REGISTER_TOKEN> 需替换为创建节点时的一次性令牌；若已丢失，请在节点详情「概览」中点击「生成新的安装令牌」。",
+	}
+	_ = json.NewEncoder(w).Encode(out)
 }
 
 func (s *Server) installScript(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +83,7 @@ func (s *Server) installScript(w http.ResponseWriter, r *http.Request) {
 	var nid int64
 	var exp time.Time
 	var used *time.Time
-	err := s.pool.QueryRow(r.Context(), `SELECT node_id, expires_at, used_at FROM node_install_token WHERE token_hash=$1`, th).Scan(&nid, &exp, &used)
+	err := s.pool.QueryRow(r.Context(), `SELECT node_id, expires_at, used_at FROM node_install_token WHERE token_hash=$1 AND revoked_at IS NULL`, th).Scan(&nid, &exp, &used)
 	if err != nil || nid != id {
 		http.Error(w, "invalid token for node", http.StatusForbidden)
 		return
@@ -280,7 +284,7 @@ func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
 	var nid int64
 	var used *time.Time
 	var exp time.Time
-	err = tx.QueryRow(r.Context(), `SELECT node_id, used_at, expires_at FROM node_install_token WHERE token_hash=$1 FOR UPDATE`, th).Scan(&nid, &used, &exp)
+	err = tx.QueryRow(r.Context(), `SELECT node_id, used_at, expires_at FROM node_install_token WHERE token_hash=$1 AND revoked_at IS NULL FOR UPDATE`, th).Scan(&nid, &used, &exp)
 	if err != nil {
 		http.Error(w, "invalid token", http.StatusUnauthorized)
 		return

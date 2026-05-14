@@ -71,6 +71,73 @@
     };
   }
 
+  function copyTextToClipboard(text) {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () {
+          toast("已复制到剪贴板");
+        },
+        function () {
+          toast("复制失败", true);
+        }
+      );
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      toast("已复制到剪贴板");
+    } catch (e) {
+      toast("复制失败", true);
+    }
+    document.body.removeChild(ta);
+  }
+
+  function showAgentInstallModal(title, wget, curl, optNodeId) {
+    const root = document.getElementById("modal-root");
+    var goBtn =
+      optNodeId != null
+        ? '<p><button class="btn" type="button" id="miGo">打开节点详情</button></p>'
+        : "";
+    root.innerHTML =
+      '<div class="modal-bg"><div class="modal" style="max-width:640px"><h3>' +
+      esc(title) +
+      '</h3><p class="small">请在目标 Linux VPS 上以 root 或 sudo 执行下列任一命令完成 Agent 安装与注册（register token 仅出现在命令中，勿泄露）。</p>' +
+      '<label class="small">wget</label><textarea readonly class="code" id="miWget" rows="3" style="width:100%">' +
+      esc(wget || "") +
+      '</textarea><p><button class="btn" type="button" id="miCpW">复制 wget</button></p>' +
+      '<label class="small">curl</label><textarea readonly class="code" id="miCurl" rows="3" style="width:100%">' +
+      esc(curl || "") +
+      '</textarea><p><button class="btn" type="button" id="miCpC">复制 curl</button></p>' +
+      goBtn +
+      '<div class="actions"><button class="btn btn-primary" type="button" id="miClose">关闭</button></div></div></div>';
+    root.querySelector("#miClose").onclick = function () {
+      root.innerHTML = "";
+    };
+    root.querySelector("#miCpW").onclick = function () {
+      copyTextToClipboard((root.querySelector("#miWget") || {}).value || "");
+    };
+    root.querySelector("#miCpC").onclick = function () {
+      copyTextToClipboard((root.querySelector("#miCurl") || {}).value || "");
+    };
+    var go = root.querySelector("#miGo");
+    if (go && optNodeId != null) {
+      go.onclick = function () {
+        root.innerHTML = "";
+        state.nodeId = optNodeId;
+        state.view = "detail";
+        state.tab = "overview";
+        bootDetail();
+      };
+    }
+  }
+
   function api(path, opts) {
     opts = opts || {};
     const h = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
@@ -462,7 +529,7 @@
       if (!code || !name) return;
       api("/api/admin/nodes", { method: "POST", body: JSON.stringify({ node_code: code, node_name: name }) })
         .then(function (j) {
-          alert("请保存一次性 register_token：\n" + j.register_token);
+          showAgentInstallModal("节点已创建", j.install_command_wget || "", j.install_command_curl || "", j.node_id);
           refreshDash();
         })
         .catch(function (e) {
@@ -668,7 +735,7 @@
       '">' +
       esc(n.install_state || "") +
       "</span></div>" +
-      '<button class="btn" id="script">下载安装脚本</button></div>' +
+      '<button class="btn" id="script">高级：install-script.sh</button></div>' +
       tabBar() +
       '<div id="tabbody"></div>';
 
@@ -701,8 +768,12 @@
     const el = document.getElementById("tabbody");
     if (!el) return;
     const n = state.node || {};
+    if (state.tab === "overview") {
       const last = state.monitors[0] || {};
       const pay = last.payload_json || {};
+      const wget = n.install_command_wget || "";
+      const curl = n.install_command_curl || "";
+      const hint = n.install_command_hint || "";
       el.innerHTML =
         '<div class="panel"><h3 style="margin-top:0">概览</h3><p class="small">最近心跳：' +
         fmtTime(n.last_seen_at) +
@@ -714,9 +785,44 @@
         "% · 磁盘 " +
         (last.disk_pct != null ? last.disk_pct.toFixed(1) : "-") +
         "%</p>" +
-        "<p class=\"small\">监控 JSON（最近一条）：<pre style=\"white-space:pre-wrap;font-size:12px\">" +
+        '<div class="panel" style="margin-top:14px;border:1px solid rgba(91,140,255,0.35)">' +
+        "<h4 style=\"margin-top:0\">Agent 一键安装</h4>" +
+        '<p class="small">在目标机器上以 root 或 sudo 执行（脚本：<code>/install-agent.sh</code>）。' +
+        "安装后 Agent 会向 Center 注册；请在 Center 配置 <code>CENTER_AGENT_DOWNLOAD_URL</code> 与 <code>CENTER_AGENT_SHA256</code>（或按文档放置制品），否则脚本无法下载二进制。</p>" +
+        '<p class="small">' +
+        esc(hint) +
+        "</p>" +
+        '<label class="small">wget</label><textarea readonly class="code" id="instWget" rows="3" style="width:100%;resize:vertical">' +
+        esc(wget) +
+        '</textarea><p><button type="button" class="btn" id="cpInstW">复制 wget</button></p>' +
+        '<label class="small">curl</label><textarea readonly class="code" id="instCurl" rows="3" style="width:100%;resize:vertical">' +
+        esc(curl) +
+        '</textarea><p><button type="button" class="btn" id="cpInstC">复制 curl</button> ' +
+        '<button type="button" class="btn btn-primary" id="issueInstTok">生成新的安装令牌</button></p>' +
+        "</div>" +
+        '<h4 class="small" style="margin-top:16px">监控 JSON（最近一条）</h4>' +
+        '<pre class="small" style="white-space:pre-wrap;font-size:12px">' +
         esc(JSON.stringify(pay, null, 2)) +
-        "</pre></p></div>";
+        "</pre></div>";
+      document.getElementById("cpInstW").onclick = function () {
+        copyTextToClipboard(wget);
+      };
+      document.getElementById("cpInstC").onclick = function () {
+        copyTextToClipboard(curl);
+      };
+      document.getElementById("issueInstTok").onclick = function () {
+        api("/api/admin/nodes/" + state.nodeId + "/issue-install-token", { method: "POST", body: "{}" })
+          .then(function (j) {
+            state.node.install_command_wget = j.install_command_wget;
+            state.node.install_command_curl = j.install_command_curl;
+            state.node.expires_at = j.expires_at;
+            toast("已生成新安装命令" + (j.expires_at ? "，到期 " + j.expires_at : ""));
+            renderTab();
+          })
+          .catch(function (e) {
+            toast(e.message, true);
+          });
+      };
       return;
     }
     if (state.tab === "discovery") {

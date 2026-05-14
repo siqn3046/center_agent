@@ -43,7 +43,7 @@ func Load() *Config {
 		JWTTTL:           jwtTTL,
 		AgentDownloadURL: getenv("CENTER_AGENT_DOWNLOAD_URL", ""),
 		AgentSHA256:      getenv("CENTER_AGENT_SHA256", ""),
-		PublicBaseURL:    getenv("CENTER_PUBLIC_BASE_URL", "http://127.0.0.1:8080"),
+		PublicBaseURL:    getenv("CENTER_PUBLIC_BASE_URL", ""),
 		ArtifactDir:      getenv("CENTER_ARTIFACT_DIR", ""),
 		AgentVersion:     getenv("CENTER_AGENT_VERSION", ""),
 		AgentBinaryName:  binName,
@@ -62,6 +62,9 @@ func trimRightSlash(s string) string {
 func (c *Config) ResolveAgentDownload() (downloadURL string, sha256hex string, source string, err error) {
 	base := trimRightSlash(c.PublicBaseURL)
 	if c.ArtifactDir != "" && c.AgentVersion != "" {
+		if base == "" {
+			return "", "", "", fmt.Errorf("使用 CENTER_ARTIFACT_DIR 托管 Agent 时必须设置 CENTER_PUBLIC_BASE_URL（对外可访问的 Center 根 URL）")
+		}
 		binPath := filepath.Join(c.ArtifactDir, c.AgentVersion, c.AgentBinaryName)
 		if st, e := os.Stat(binPath); e == nil && !st.IsDir() {
 			sum, e2 := artifactSHA256(binPath, filepath.Join(c.ArtifactDir, c.AgentVersion, "sha256"), c.AgentSHA256)

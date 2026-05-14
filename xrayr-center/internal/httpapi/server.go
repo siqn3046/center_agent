@@ -46,6 +46,7 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	r.Get("/api/public/artifacts/xrayr-agent/{version}/{file}", s.getPublicArtifactFile)
+	r.Get("/install-agent.sh", s.serveInstallAgentSh)
 
 	r.Post("/api/admin/login", s.postAdminLogin)
 
@@ -58,6 +59,7 @@ func (s *Server) Router() http.Handler {
 		r.Get("/nodes", s.listNodes)
 		r.Post("/nodes", s.createNode)
 		r.Get("/nodes/{id}", s.getNode)
+		r.Post("/nodes/{id}/issue-install-token", s.postNodeIssueInstallToken)
 		r.Patch("/nodes/{id}/settings", s.patchNodeSettings)
 		r.Get("/nodes/{id}/install-script.sh", s.installScript)
 		r.Get("/nodes/{id}/discovery-reports", s.listDiscovery)
@@ -347,10 +349,63 @@ func (s *Server) createNode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	wget, curl := s.agentInstallCommandsForRequest(r, plainTok)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"node_id":         nid,
-		"register_token": plainTok,
-		"expires_at":      exp.UTC().Format(time.RFC3339),
+		"node_id":               nid,
+		"expires_at":            exp.UTC().Format(time.RFC3339),
+		"install_command_wget":  wget,
+		"install_command_curl":  curl,
+	})
+}
+
+func (s *Server) postNodeIssueInstallToken(w http.ResponseWriter, r *http.Request) {
+	adminID := r.Context().Value(ctxAdminID).(int64)
+	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if id <= 0 {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	var ok int64
+	err := s.pool.QueryRow(r.Context(), `SELECT id FROM node WHERE id=$1 AND disabled=false`, id).Scan(&ok)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	tx, err := s.pool.Begin(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	_, _ = tx.Exec(r.Context(), `UPDATE node_install_token SET revoked_at=now() WHERE node_id=$1 AND used_at IS NULL AND revoked_at IS NULL`, id)
+
+	plainTok := randomHex(24)
+	th := hashToken(plainTok)
+	exp := time.Now().Add(72 * time.Hour)
+	const im = "AUTO_DETECT"
+	_, err = tx.Exec(r.Context(), `INSERT INTO node_install_token(
+		node_id, token_hash, import_mode, install_xrayr_if_missing, upgrade_xrayr_if_exists, repair_if_broken,
+		target_xrayr_version, target_download_url, target_sha256, auto_start_after_install, auto_enable_manage_after_success,
+		expires_at, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		id, th, im, true, false, false, nil, nil, nil, true, false, exp, adminID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	detail, _ := json.Marshal(map[string]any{"node_id": id})
+	_, _ = tx.Exec(r.Context(), `INSERT INTO operation_log(actor_admin_id, action, target_type, target_id, detail_json, success) VALUES ($1,'node.issue_install_token','node',$2,$3::jsonb,true)`,
+		adminID, fmt.Sprint(id), detail)
+	if err := tx.Commit(r.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	wget, curl := s.agentInstallCommandsForRequest(r, plainTok)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"install_command_wget": wget,
+		"install_command_curl": curl,
+		"expires_at":           exp.UTC().Format(time.RFC3339),
 	})
 }
 
